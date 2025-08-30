@@ -23,12 +23,18 @@ type BollingerBandsStrategy struct {
 	TakeProfitPercent   float64 `json:"take_profit_percent"`
 	CooldownBars        int     `json:"cooldown_bars"`
 
+	// 卖出策略参数
+	SellStrategyName string `json:"sell_strategy_name"`
+
 	// 内部状态
 	bb             *indicators.BollingerBands
 	priceHistory   []decimal.Decimal
 	currentBar     int
 	lastTradeBar   int
 	lastTradePrice decimal.Decimal
+
+	// 卖出策略
+	sellStrategy strategy.SellStrategy
 }
 
 // NewBollingerBandsStrategy 创建布林道策略
@@ -74,6 +80,18 @@ func (s *BollingerBandsStrategy) SetParams(params strategy.StrategyParams) error
 		s.StopLossPercent = bollingerParams.StopLossPercent
 		s.TakeProfitPercent = bollingerParams.TakeProfitPercent
 		s.CooldownBars = bollingerParams.CooldownBars
+
+		// 设置卖出策略
+		s.SellStrategyName = bollingerParams.SellStrategyName
+
+		// 创建卖出策略实例
+		sellConfigs := strategy.GetDefaultSellStrategyConfigs()
+		if sellConfig, exists := sellConfigs[s.SellStrategyName]; exists {
+			sellStrategy, err := strategy.CreateSellStrategy(sellConfig)
+			if err == nil {
+				s.sellStrategy = sellStrategy
+			}
+		}
 	} else {
 		return fmt.Errorf("invalid parameter type, expected *strategy.BollingerBandsParams")
 	}
@@ -179,7 +197,7 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 	return signals
 }
 
-// checkStopConditions 检查止损止盈条件
+// checkStopConditions 检查止损止盈条件（智能卖出策略）
 func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
 	var signals []*strategy.Signal
 
@@ -192,7 +210,7 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 	pnl := currentPrice.Sub(s.lastTradePrice)
 	pnlPercent := pnl.Div(s.lastTradePrice)
 
-	// 止损检查
+	// 1. 止损检查（优先级最高）
 	stopLossThreshold := decimal.NewFromFloat(-s.StopLossPercent)
 	if pnlPercent.LessThanOrEqual(stopLossThreshold) {
 		signals = append(signals, &strategy.Signal{
@@ -201,25 +219,52 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 			Strength:  1.0,
 			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
-
-		s.lastTradeBar = s.currentBar
-		s.lastTradePrice = decimal.Zero
+		s.resetTradeState()
 		return signals
 	}
 
-	// 止盈检查
-	takeProfitThreshold := decimal.NewFromFloat(s.TakeProfitPercent)
-	if pnlPercent.GreaterThanOrEqual(takeProfitThreshold) {
-		signals = append(signals, &strategy.Signal{
-			Type:      "SELL",
-			Reason:    fmt.Sprintf("take profit: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
-			Strength:  1.0,
-			Timestamp: kline.OpenTime.Unix() * 1000,
-		})
+	// 2. 使用卖出策略检查
+	if s.sellStrategy != nil {
+		// 创建交易信息
+		tradeInfo := &strategy.TradeInfo{
+			EntryPrice:   s.lastTradePrice,
+			CurrentPrice: currentPrice,
+			CurrentPnL:   pnlPercent,
+		}
 
-		s.lastTradeBar = s.currentBar
-		s.lastTradePrice = decimal.Zero
+		sellSignal := s.sellStrategy.ShouldSell(kline, tradeInfo)
+		if sellSignal.ShouldSell {
+			signals = append(signals, &strategy.Signal{
+				Type:      "SELL",
+				Reason:    sellSignal.Reason,
+				Strength:  sellSignal.Strength,
+				Timestamp: kline.OpenTime.Unix() * 1000,
+			})
+			s.resetTradeState()
+			return signals
+		}
+	} else {
+		// 3. 兜底：基础止盈检查
+		takeProfitThreshold := decimal.NewFromFloat(s.TakeProfitPercent)
+		if pnlPercent.GreaterThanOrEqual(takeProfitThreshold) {
+			signals = append(signals, &strategy.Signal{
+				Type:      "SELL",
+				Reason:    fmt.Sprintf("take profit: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
+				Strength:  1.0,
+				Timestamp: kline.OpenTime.Unix() * 1000,
+			})
+			s.resetTradeState()
+		}
 	}
 
 	return signals
+}
+
+// resetTradeState 重置交易状态
+func (s *BollingerBandsStrategy) resetTradeState() {
+	s.lastTradeBar = s.currentBar
+	s.lastTradePrice = decimal.Zero
+	if s.sellStrategy != nil {
+		s.sellStrategy.Reset()
+	}
 }

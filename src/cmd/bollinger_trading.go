@@ -44,6 +44,10 @@ func RegisterBollingerBacktestCmd() {
 	var takeProfitPercent float64
 	var cooldownBars int
 
+	// 卖出策略参数
+	var sellStrategy string
+	var listSellStrategies bool
+
 	cmd.RegisterCmd("bollinger-backtest", "run Bollinger Bands backtest", func(args *arg.Arg) {
 		args.String(&configFile, "c", "config file path")
 		args.String(&base, "base", "base currency (e.g., BTC, ETH, PEPE, WIF)")
@@ -63,7 +67,17 @@ func RegisterBollingerBacktestCmd() {
 		args.Float64(&takeProfitPercent, "take-profit", "take profit percent (default: 0.2)")
 		args.Int(&cooldownBars, "cooldown", "cooldown bars (default: 1)")
 
+		// 卖出策略参数
+		args.String(&sellStrategy, "sell-strategy", "sell strategy (conservative, moderate, aggressive, trailing_5, trailing_10, combo_smart, partial_pyramid)")
+		args.Bool(&listSellStrategies, "list-sell-strategies", "list all available sell strategies")
+
 		args.Parse()
+
+		// 如果只是列出卖出策略
+		if listSellStrategies {
+			listAvailableSellStrategies()
+			return
+		}
 
 		// 设置策略参数默认值
 		if period == 0 {
@@ -86,6 +100,11 @@ func RegisterBollingerBacktestCmd() {
 		}
 		if cooldownBars == 0 {
 			cooldownBars = 1
+		}
+
+		// 设置卖出策略默认值
+		if sellStrategy == "" {
+			sellStrategy = "moderate" // 默认使用适中策略
 		}
 
 		// 确保配置文件路径是绝对路径
@@ -138,6 +157,7 @@ func RegisterBollingerBacktestCmd() {
 			StopLossPercent:     stopLossPercent,
 			TakeProfitPercent:   takeProfitPercent,
 			CooldownBars:        cooldownBars,
+			SellStrategyName:    sellStrategy,
 		}
 
 		// 运行回测系统
@@ -223,6 +243,10 @@ func RegisterBollingerLiveCmd() {
 	var takeProfitPercent float64
 	var cooldownBars int
 
+	// 卖出策略参数
+	var sellStrategy string
+	var listSellStrategies bool
+
 	cmd.RegisterCmd("bollinger-live", "run Bollinger Bands live trading", func(args *arg.Arg) {
 		args.String(&configFile, "c", "config file path")
 		args.String(&base, "base", "base currency (e.g., BTC, ETH, PEPE, WIF)")
@@ -240,7 +264,17 @@ func RegisterBollingerLiveCmd() {
 		args.Float64(&takeProfitPercent, "take-profit", "take profit percent (default: 0.2)")
 		args.Int(&cooldownBars, "cooldown", "cooldown bars (default: 1)")
 
+		// 卖出策略参数
+		args.String(&sellStrategy, "sell-strategy", "sell strategy (conservative, moderate, aggressive, trailing_5, trailing_10, combo_smart, partial_pyramid)")
+		args.Bool(&listSellStrategies, "list-sell-strategies", "list all available sell strategies")
+
 		args.Parse()
+
+		// 如果只是列出卖出策略
+		if listSellStrategies {
+			listAvailableSellStrategies()
+			return
+		}
 
 		// 设置默认配置文件路径
 		if configFile == "" {
@@ -301,6 +335,11 @@ func RegisterBollingerLiveCmd() {
 			cooldownBars = 1
 		}
 
+		// 设置卖出策略默认值
+		if sellStrategy == "" {
+			sellStrategy = "moderate" // 默认使用适中策略
+		}
+
 		// 创建策略参数
 		strategyParams := &strategy.BollingerBandsParams{
 			Period:              period,
@@ -310,6 +349,7 @@ func RegisterBollingerLiveCmd() {
 			StopLossPercent:     stopLossPercent,
 			TakeProfitPercent:   takeProfitPercent,
 			CooldownBars:        cooldownBars,
+			SellStrategyName:    sellStrategy,
 		}
 
 		// 运行实盘交易
@@ -369,6 +409,38 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 	}
 
 	return nil
+}
+
+// listAvailableSellStrategies 列出所有可用的卖出策略
+func listAvailableSellStrategies() {
+	fmt.Printf("📋 Available Sell Strategies\n")
+	fmt.Printf("==================================================\n")
+
+	configs := strategy.GetDefaultSellStrategyConfigs()
+
+	for name, config := range configs {
+		fmt.Printf("🎯 %s\n", name)
+		fmt.Printf("   Type: %s\n", config.Type)
+
+		switch config.Type {
+		case strategy.SellStrategyFixed:
+			fmt.Printf("   Take Profit: %.1f%%\n", config.FixedTakeProfit*100)
+		case strategy.SellStrategyTrailing:
+			fmt.Printf("   Trailing: %.1f%% after %.1f%% profit\n",
+				config.TrailingPercent*100, config.MinProfitForTrailing*100)
+		case strategy.SellStrategyCombo:
+			fmt.Printf("   Fixed: %.1f%%, Trailing: %.1f%% after %.1f%%\n",
+				config.FixedTakeProfit*100, config.TrailingPercent*100, config.MinProfitForTrailing*100)
+			fmt.Printf("   Max Holding: %d days\n", config.MaxHoldingDays)
+		case strategy.SellStrategyPartial:
+			fmt.Printf("   Levels: %d\n", len(config.PartialLevels))
+			for i, level := range config.PartialLevels {
+				fmt.Printf("     L%d: %.0f%% profit -> sell %.0f%%\n",
+					i+1, level.ProfitPercent*100, level.SellPercent*100)
+			}
+		}
+		fmt.Println()
+	}
 }
 
 // RegisterAllTradingCommands 注册所有交易相关命令

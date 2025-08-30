@@ -11,8 +11,11 @@ type BollingerBandsParams struct {
 	PositionSizePercent float64 // 仓位比例，默认0.95
 	MinTradeAmount      float64 // 最小交易额，默认10
 	StopLossPercent     float64 // 止损比例，默认1.0 (100%，即不止损)
-	TakeProfitPercent   float64 // 止盈比例，默认0.2 (20%)
+	TakeProfitPercent   float64 // 基础止盈比例，默认0.2 (20%)
 	CooldownBars        int     // 冷却期K线数，默认1
+
+	// 卖出策略参数
+	SellStrategyName string // 卖出策略名称，默认"moderate"
 }
 
 // GetDefaultBollingerBandsParams 获取默认的布林道策略参数
@@ -25,6 +28,9 @@ func GetDefaultBollingerBandsParams() *BollingerBandsParams {
 		StopLossPercent:     1.0, // 100% = 不止损
 		TakeProfitPercent:   0.2, // 20%
 		CooldownBars:        1,
+
+		// 卖出策略默认参数
+		SellStrategyName: "moderate", // 默认使用适中策略
 	}
 }
 
