@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"go-build-stream-gateway-go-server-main/src/binance"
-	"go-build-stream-gateway-go-server-main/src/executor"
-	"go-build-stream-gateway-go-server-main/src/indicators"
-	"go-build-stream-gateway-go-server-main/src/strategy"
+	"tradingbot/src/cex"
+	"tradingbot/src/executor"
+	"tradingbot/src/indicators"
+	"tradingbot/src/strategy"
 
 	"github.com/shopspring/decimal"
 )
@@ -52,40 +52,30 @@ func (s *BollingerBandsStrategy) GetName() string {
 }
 
 // GetParams 获取策略参数
-func (s *BollingerBandsStrategy) GetParams() map[string]interface{} {
-	return map[string]interface{}{
-		"period":                s.Period,
-		"multiplier":            s.Multiplier,
-		"position_size_percent": s.PositionSizePercent,
-		"min_trade_amount":      s.MinTradeAmount,
-		"stop_loss_percent":     s.StopLossPercent,
-		"take_profit_percent":   s.TakeProfitPercent,
-		"cooldown_bars":         s.CooldownBars,
+func (s *BollingerBandsStrategy) GetParams() strategy.StrategyParams {
+	return &strategy.BollingerBandsParams{
+		Period:              s.Period,
+		Multiplier:          s.Multiplier,
+		PositionSizePercent: s.PositionSizePercent,
+		MinTradeAmount:      s.MinTradeAmount,
+		StopLossPercent:     s.StopLossPercent,
+		TakeProfitPercent:   s.TakeProfitPercent,
+		CooldownBars:        s.CooldownBars,
 	}
 }
 
 // SetParams 设置策略参数
-func (s *BollingerBandsStrategy) SetParams(params map[string]interface{}) error {
-	if period, ok := params["period"].(int); ok {
-		s.Period = period
-	}
-	if multiplier, ok := params["multiplier"].(float64); ok {
-		s.Multiplier = multiplier
-	}
-	if positionSizePercent, ok := params["position_size_percent"].(float64); ok {
-		s.PositionSizePercent = positionSizePercent
-	}
-	if minTradeAmount, ok := params["min_trade_amount"].(float64); ok {
-		s.MinTradeAmount = minTradeAmount
-	}
-	if stopLossPercent, ok := params["stop_loss_percent"].(float64); ok {
-		s.StopLossPercent = stopLossPercent
-	}
-	if takeProfitPercent, ok := params["take_profit_percent"].(float64); ok {
-		s.TakeProfitPercent = takeProfitPercent
-	}
-	if cooldownBars, ok := params["cooldown_bars"].(int); ok {
-		s.CooldownBars = cooldownBars
+func (s *BollingerBandsStrategy) SetParams(params strategy.StrategyParams) error {
+	if bollingerParams, ok := params.(*strategy.BollingerBandsParams); ok {
+		s.Period = bollingerParams.Period
+		s.Multiplier = bollingerParams.Multiplier
+		s.PositionSizePercent = bollingerParams.PositionSizePercent
+		s.MinTradeAmount = bollingerParams.MinTradeAmount
+		s.StopLossPercent = bollingerParams.StopLossPercent
+		s.TakeProfitPercent = bollingerParams.TakeProfitPercent
+		s.CooldownBars = bollingerParams.CooldownBars
+	} else {
+		return fmt.Errorf("invalid parameter type, expected *strategy.BollingerBandsParams")
 	}
 
 	// 重新创建布林道指标
@@ -94,7 +84,7 @@ func (s *BollingerBandsStrategy) SetParams(params map[string]interface{}) error 
 }
 
 // OnData 处理新的K线数据
-func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *binance.KlineData, portfolio *executor.Portfolio) ([]*strategy.Signal, error) {
+func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineData, portfolio *executor.Portfolio) ([]*strategy.Signal, error) {
 	s.currentBar++
 
 	// 添加价格到历史数据
@@ -117,7 +107,7 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *binance.Klin
 		return nil, fmt.Errorf("failed to calculate Bollinger Bands: %w", err)
 	}
 
-	bbResult.Timestamp = kline.OpenTime
+	bbResult.Timestamp = kline.OpenTime.Unix() * 1000
 
 	var signals []*strategy.Signal
 
@@ -146,7 +136,7 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *binance.Klin
 }
 
 // generateTradeSignals 生成交易信号
-func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBandsResult, kline *binance.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBandsResult, kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
 	var signals []*strategy.Signal
 
 	currentPrice := kline.Close
@@ -157,31 +147,40 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 			Type:      "BUY",
 			Reason:    fmt.Sprintf("price %.4f touched lower band %.4f", currentPrice.InexactFloat64(), bb.LowerBand.InexactFloat64()),
 			Strength:  0.8,
-			Timestamp: kline.OpenTime,
+			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
 
 		s.lastTradeBar = s.currentBar
 		s.lastTradePrice = currentPrice
 	}
 
-	// 卖出信号：价格触及上轨且有持仓
-	if currentPrice.GreaterThanOrEqual(bb.UpperBand) && !portfolio.Position.IsZero() {
-		signals = append(signals, &strategy.Signal{
-			Type:      "SELL",
-			Reason:    fmt.Sprintf("price %.4f touched upper band %.4f", currentPrice.InexactFloat64(), bb.UpperBand.InexactFloat64()),
-			Strength:  0.8,
-			Timestamp: kline.OpenTime,
-		})
+	// 卖出信号：价格触及上轨且有持仓且确保盈利至少20%
+	if currentPrice.GreaterThanOrEqual(bb.UpperBand) && !portfolio.Position.IsZero() &&
+		!s.lastTradePrice.IsZero() && currentPrice.GreaterThan(s.lastTradePrice) {
 
-		s.lastTradeBar = s.currentBar
-		s.lastTradePrice = decimal.Zero
+		pnlPercent := currentPrice.Sub(s.lastTradePrice).Div(s.lastTradePrice).Mul(decimal.NewFromInt(100))
+		minProfitPercent := decimal.NewFromFloat(20.0) // 最小盈利20%
+
+		// 只有盈利达到20%以上才卖出
+		if pnlPercent.GreaterThanOrEqual(minProfitPercent) {
+			signals = append(signals, &strategy.Signal{
+				Type: "SELL",
+				Reason: fmt.Sprintf("price %.4f touched upper band %.4f with profit %.2f%% (>20%%)",
+					currentPrice.InexactFloat64(), bb.UpperBand.InexactFloat64(), pnlPercent.InexactFloat64()),
+				Strength:  0.8,
+				Timestamp: kline.OpenTime.Unix() * 1000,
+			})
+
+			s.lastTradeBar = s.currentBar
+			s.lastTradePrice = decimal.Zero
+		}
 	}
 
 	return signals
 }
 
 // checkStopConditions 检查止损止盈条件
-func (s *BollingerBandsStrategy) checkStopConditions(kline *binance.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
 	var signals []*strategy.Signal
 
 	// 只有持有仓位时才检查止损止盈
@@ -200,7 +199,7 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *binance.KlineData, p
 			Type:      "SELL",
 			Reason:    fmt.Sprintf("stop loss: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
 			Strength:  1.0,
-			Timestamp: kline.OpenTime,
+			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
 
 		s.lastTradeBar = s.currentBar
@@ -215,7 +214,7 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *binance.KlineData, p
 			Type:      "SELL",
 			Reason:    fmt.Sprintf("take profit: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
 			Strength:  1.0,
-			Timestamp: kline.OpenTime,
+			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
 
 		s.lastTradeBar = s.currentBar

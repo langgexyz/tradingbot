@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"go-build-stream-gateway-go-server-main/src/binance"
+	"tradingbot/src/cex"
 
 	"github.com/shopspring/decimal"
 	"github.com/xpwu/go-log/log"
@@ -13,44 +13,70 @@ import (
 
 // LiveExecutor 实盘交易执行器
 type LiveExecutor struct {
-	client *binance.Client
-	symbol string
+	cexClient   cex.CEXClient
+	tradingPair cex.TradingPair
 }
 
 // NewLiveExecutor 创建实盘交易执行器
-func NewLiveExecutor(client *binance.Client, symbol string) *LiveExecutor {
+func NewLiveExecutor(cexClient cex.CEXClient, pair cex.TradingPair) *LiveExecutor {
 	return &LiveExecutor{
-		client: client,
-		symbol: symbol,
+		cexClient:   cexClient,
+		tradingPair: pair,
 	}
 }
 
-// ExecuteOrder 执行订单（真实交易）
-func (e *LiveExecutor) ExecuteOrder(ctx context.Context, order *Order) (*OrderResult, error) {
+// Buy 执行买入订单（真实交易）
+func (e *LiveExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("LiveExecutor")
 
-	logger.Info("执行实盘订单",
-		"side", order.Side,
-		"quantity", order.Quantity.String(),
-		"price", order.Price.String(),
-		"reason", order.Reason)
+	logger.Info(fmt.Sprintf("执行实盘买入订单: quantity=%s, price=%s, reason=%s",
+		order.Quantity.String(),
+		order.Price.String(),
+		order.Reason))
 
 	// TODO: 实现真实的币安API调用
 	// 目前返回模拟结果，避免编译错误
 	result := &OrderResult{
-		OrderID:   fmt.Sprintf("live_%d", time.Now().UnixNano()),
-		Symbol:    order.Symbol,
-		Side:      order.Side,
-		Quantity:  order.Quantity,
-		Price:     order.Price,
-		Timestamp: order.Timestamp,
-		Success:   false,
-		Error:     "live trading not implemented yet",
+		OrderID:     fmt.Sprintf("live_%d", time.Now().UnixNano()),
+		TradingPair: order.TradingPair,
+		Side:        OrderSideBuy,
+		Quantity:    order.Quantity,
+		Price:       order.Price,
+		Timestamp:   order.Timestamp,
+		Success:     false,
+		Error:       "live trading not implemented yet",
 	}
 
-	logger.Error("实盘交易尚未实现，返回模拟结果")
-	return result, fmt.Errorf("live trading not implemented")
+	logger.Error("实盘买入交易尚未实现，返回模拟结果")
+	return result, fmt.Errorf("live buy trading not implemented")
+}
+
+// Sell 执行卖出订单（真实交易）
+func (e *LiveExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
+	ctx, logger := log.WithCtx(ctx)
+	logger.PushPrefix("LiveExecutor")
+
+	logger.Info(fmt.Sprintf("执行实盘卖出订单: quantity=%s, price=%s, reason=%s",
+		order.Quantity.String(),
+		order.Price.String(),
+		order.Reason))
+
+	// TODO: 实现真实的币安API调用
+	// 目前返回模拟结果，避免编译错误
+	result := &OrderResult{
+		OrderID:     fmt.Sprintf("live_%d", time.Now().UnixNano()),
+		TradingPair: order.TradingPair,
+		Side:        OrderSideSell,
+		Quantity:    order.Quantity,
+		Price:       order.Price,
+		Timestamp:   order.Timestamp,
+		Success:     false,
+		Error:       "live trading not implemented yet",
+	}
+
+	logger.Error("实盘卖出交易尚未实现，返回模拟结果")
+	return result, fmt.Errorf("live sell trading not implemented")
 }
 
 // GetPortfolio 获取当前投资组合状态

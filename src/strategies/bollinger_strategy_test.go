@@ -3,9 +3,10 @@ package strategies
 import (
 	"context"
 	"testing"
+	"time"
 
-	"go-build-stream-gateway-go-server-main/src/binance"
-	"go-build-stream-gateway-go-server-main/src/executor"
+	"tradingbot/src/cex"
+	"tradingbot/src/executor"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"

@@ -6,11 +6,10 @@ import (
 	"sort"
 	"time"
 
-	"go-build-stream-gateway-go-server-main/src/binance"
-	"go-build-stream-gateway-go-server-main/src/database"
-	"go-build-stream-gateway-go-server-main/src/executor"
-	"go-build-stream-gateway-go-server-main/src/strategy"
-	"go-build-stream-gateway-go-server-main/src/timeframes"
+	"tradingbot/src/cex"
+	"tradingbot/src/executor"
+	"tradingbot/src/strategy"
+	"tradingbot/src/timeframes"
 
 	"github.com/shopspring/decimal"
 	"github.com/xpwu/go-log/log"
@@ -18,16 +17,18 @@ import (
 
 // TradingEngine 统一的交易引擎（支持回测和实盘）
 type TradingEngine struct {
-	symbol        string
-	timeframe     timeframes.Timeframe
-	strategy      strategy.Strategy
-	executor      executor.Executor
-	klineManager  *database.KlineManager
-	binanceClient *binance.Client
+	tradingPair cex.TradingPair
+	timeframe   timeframes.Timeframe
+	strategy    strategy.Strategy
+	executor    executor.Executor
+	cexClient   cex.CEXClient
 
 	// 配置
 	positionSizePercent decimal.Decimal
 	minTradeAmount      decimal.Decimal
+
+	// 信号处理器
+	signalRegistry *SignalHandlerRegistry
 
 	// 运行状态
 	isRunning bool
@@ -36,24 +37,34 @@ type TradingEngine struct {
 
 // NewTradingEngine 创建交易引擎
 func NewTradingEngine(
-	symbol string,
+	pair cex.TradingPair,
 	timeframe timeframes.Timeframe,
 	strategy strategy.Strategy,
 	executor executor.Executor,
-	klineManager *database.KlineManager,
-	binanceClient *binance.Client,
+	cexClient cex.CEXClient,
 ) *TradingEngine {
-	return &TradingEngine{
-		symbol:              symbol,
+	engine := &TradingEngine{
+		tradingPair:         pair,
 		timeframe:           timeframe,
 		strategy:            strategy,
 		executor:            executor,
-		klineManager:        klineManager,
-		binanceClient:       binanceClient,
+		cexClient:           cexClient,
 		positionSizePercent: decimal.NewFromFloat(0.95),
 		minTradeAmount:      decimal.NewFromFloat(10.0),
 		stopChan:            make(chan struct{}),
 	}
+
+	// 初始化信号处理器注册表
+	engine.signalRegistry = NewSignalHandlerRegistry()
+
+	// 注册默认的信号处理器
+	buyHandler := NewBuySignalHandler(executor, pair, engine.positionSizePercent, engine.minTradeAmount)
+	sellHandler := NewSellSignalHandler(executor, pair)
+
+	engine.signalRegistry.RegisterHandler("BUY", buyHandler)
+	engine.signalRegistry.RegisterHandler("SELL", sellHandler)
+
+	return engine
 }
 
 // SetPositionSizePercent 设置仓位比例
@@ -71,28 +82,21 @@ func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingEngine")
 
-	logger.Info("开始回测",
-		"symbol", e.symbol,
-		"timeframe", e.timeframe.String(),
-		"start", startTime.Format("2006-01-02"),
-		"end", endTime.Format("2006-01-02"))
+	logger.Info(fmt.Sprintf("开始回测: symbol=%s, timeframe=%s, start=%s, end=%s",
+		e.tradingPair.String(),
+		e.timeframe.String(),
+		startTime.Format("2006-01-02"),
+		endTime.Format("2006-01-02")))
 
 	// 获取历史数据
 	startTimeMs := startTime.Unix() * 1000
 	endTimeMs := endTime.Unix() * 1000
 
-	var klines []*binance.KlineData
-	var err error
-
-	if e.klineManager != nil {
-		klines, err = e.klineManager.GetKlinesInRange(ctx, e.symbol, e.timeframe.GetBinanceInterval(), startTimeMs, endTimeMs)
-	} else if e.binanceClient != nil {
-		// 如果没有KlineManager，直接从网络获取最近100条数据
-		logger.Info("KlineManager不可用，使用网络获取数据")
-		klines, err = e.binanceClient.GetKlines(ctx, e.symbol, e.timeframe.GetBinanceInterval(), 100)
-	} else {
-		return fmt.Errorf("no data source available for backtest")
-	}
+	// 直接从 CEX 客户端获取数据
+	logger.Info("使用CEX客户端获取数据")
+	tradingPair := e.tradingPair
+	klines, err := e.cexClient.GetKlinesWithTimeRange(ctx, tradingPair, e.timeframe.GetBinanceInterval(),
+		time.Unix(startTimeMs/1000, 0), time.Unix(endTimeMs/1000, 0), 1000)
 
 	if err != nil {
 		return fmt.Errorf("failed to load historical data: %w", err)
@@ -104,10 +108,10 @@ func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time
 
 	// 按时间排序
 	sort.Slice(klines, func(i, j int) bool {
-		return klines[i].OpenTime < klines[j].OpenTime
+		return klines[i].OpenTime.Before(klines[j].OpenTime)
 	})
 
-	logger.Info("加载历史数据完成", "klines", len(klines))
+	logger.Info(fmt.Sprintf("加载历史数据完成: klines=%d", len(klines)))
 
 	// 逐个处理K线数据
 	for i, kline := range klines {
@@ -124,7 +128,7 @@ func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time
 
 		// 更新当前价格
 		portfolio.CurrentPrice = kline.Close
-		portfolio.Timestamp = time.Unix(kline.OpenTime/1000, 0)
+		portfolio.Timestamp = kline.OpenTime
 
 		// 执行策略
 		signals, err := e.strategy.OnData(ctx, kline, portfolio)
@@ -144,7 +148,7 @@ func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time
 		// 定期输出进度
 		if i%100 == 0 || i == len(klines)-1 {
 			progress := float64(i+1) / float64(len(klines)) * 100
-			logger.Info("回测进度", "progress", fmt.Sprintf("%.1f%%", progress), "kline", i+1, "total", len(klines))
+			logger.Info(fmt.Sprintf("回测进度: progress=%.1f%%, kline=%d, total=%d", progress, i+1, len(klines)))
 		}
 	}
 
@@ -157,7 +161,7 @@ func (e *TradingEngine) RunLive(ctx context.Context) error {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingEngine")
 
-	logger.Info("开始实盘交易", "symbol", e.symbol, "timeframe", e.timeframe.String())
+	logger.Info("开始实盘交易", "symbol", e.tradingPair.String(), "timeframe", e.timeframe.String())
 
 	e.isRunning = true
 	defer func() { e.isRunning = false }()
@@ -198,15 +202,9 @@ func (e *TradingEngine) Stop() {
 func (e *TradingEngine) processLiveTick(ctx context.Context) error {
 	ctx, logger := log.WithCtx(ctx)
 
-	// 获取最新K线数据
-	var klines []*binance.KlineData
-	var err error
-
-	if e.klineManager != nil {
-		klines, err = e.klineManager.GetKlines(ctx, e.symbol, e.timeframe.GetBinanceInterval(), 1)
-	} else {
-		return fmt.Errorf("kline manager is required")
-	}
+	// 直接从 CEX 客户端获取最新数据
+	tradingPair := e.tradingPair
+	klines, err := e.cexClient.GetKlines(ctx, tradingPair, e.timeframe.GetBinanceInterval(), 1)
 
 	if err != nil {
 		return fmt.Errorf("failed to get latest kline: %w", err)
@@ -226,7 +224,7 @@ func (e *TradingEngine) processLiveTick(ctx context.Context) error {
 
 	// 更新当前价格
 	portfolio.CurrentPrice = kline.Close
-	portfolio.Timestamp = time.Unix(kline.OpenTime/1000, 0)
+	portfolio.Timestamp = kline.OpenTime
 
 	// 执行策略
 	signals, err := e.strategy.OnData(ctx, kline, portfolio)
@@ -246,7 +244,7 @@ func (e *TradingEngine) processLiveTick(ctx context.Context) error {
 }
 
 // processSignal 处理交易信号
-func (e *TradingEngine) processSignal(ctx context.Context, signal *strategy.Signal, kline *binance.KlineData, portfolio *executor.Portfolio) error {
+func (e *TradingEngine) processSignal(ctx context.Context, signal *strategy.Signal, kline *cex.KlineData, portfolio *executor.Portfolio) error {
 	ctx, logger := log.WithCtx(ctx)
 
 	logger.Info("处理交易信号",
@@ -254,70 +252,8 @@ func (e *TradingEngine) processSignal(ctx context.Context, signal *strategy.Sign
 		"reason", signal.Reason,
 		"strength", signal.Strength)
 
-	var order *executor.Order
-
-	switch signal.Type {
-	case "BUY":
-		// 计算买入数量
-		availableCash := portfolio.Cash
-		tradeAmount := availableCash.Mul(e.positionSizePercent)
-
-		if tradeAmount.LessThan(e.minTradeAmount) {
-			logger.Info("交易金额过小，跳过买入", "amount", tradeAmount.String(), "min", e.minTradeAmount.String())
-			return nil
-		}
-
-		quantity := tradeAmount.Div(kline.Close)
-
-		order = &executor.Order{
-			Symbol:    e.symbol,
-			Side:      executor.OrderSideBuy,
-			Type:      executor.OrderTypeMarket,
-			Quantity:  quantity,
-			Price:     kline.Close,
-			Timestamp: time.Unix(signal.Timestamp/1000, 0),
-			Reason:    signal.Reason,
-		}
-
-	case "SELL":
-		// 卖出全部持仓
-		if portfolio.Position.IsZero() {
-			logger.Info("无持仓，跳过卖出")
-			return nil
-		}
-
-		order = &executor.Order{
-			Symbol:    e.symbol,
-			Side:      executor.OrderSideSell,
-			Type:      executor.OrderTypeMarket,
-			Quantity:  portfolio.Position,
-			Price:     kline.Close,
-			Timestamp: time.Unix(signal.Timestamp/1000, 0),
-			Reason:    signal.Reason,
-		}
-
-	default:
-		logger.Error("未知信号类型", "type", signal.Type)
-		return nil
-	}
-
-	// 执行订单
-	result, err := e.executor.ExecuteOrder(ctx, order)
-	if err != nil {
-		return fmt.Errorf("failed to execute order: %w", err)
-	}
-
-	if result.Success {
-		logger.Info("订单执行成功",
-			"order_id", result.OrderID,
-			"side", result.Side,
-			"quantity", result.Quantity.String(),
-			"price", result.Price.String())
-	} else {
-		logger.Error("订单执行失败", "error", result.Error)
-	}
-
-	return nil
+	// 使用信号处理器注册表来处理信号
+	return e.signalRegistry.HandleSignal(ctx, signal, kline, portfolio)
 }
 
 // getTimeframeInterval 获取时间周期对应的时间间隔

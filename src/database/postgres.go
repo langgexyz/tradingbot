@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"go-build-stream-gateway-go-server-main/src/binance"
+	"tradingbot/src/cex"
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
@@ -99,8 +98,14 @@ func NewPostgresDB(host, port, user, password, dbname string, sslmode string) (*
 		sslmode = "disable"
 	}
 
-	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		host, port, user, password, dbname, sslmode)
+	var psqlInfo string
+	if password == "" {
+		psqlInfo = fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=%s",
+			host, port, user, dbname, sslmode)
+	} else {
+		psqlInfo = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+			host, port, user, password, dbname, sslmode)
+	}
 
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
@@ -127,7 +132,7 @@ func (p *PostgresDB) Close() error {
 }
 
 // SaveKlines 批量保存K线数据
-func (p *PostgresDB) SaveKlines(ctx context.Context, symbol, timeframe string, klines []*binance.KlineData) error {
+func (p *PostgresDB) SaveKlines(ctx context.Context, symbol, timeframe string, klines []*cex.KlineData) error {
 	if len(klines) == 0 {
 		return nil
 	}
@@ -188,7 +193,7 @@ func (p *PostgresDB) SaveKlines(ctx context.Context, symbol, timeframe string, k
 }
 
 // SaveKlinesBatch 批量保存K线数据（高性能版本）
-func (p *PostgresDB) SaveKlinesBatch(ctx context.Context, symbol, timeframe string, klines []*binance.KlineData) error {
+func (p *PostgresDB) SaveKlinesBatch(ctx context.Context, symbol, timeframe string, klines []*cex.KlineData) error {
 	if len(klines) == 0 {
 		return nil
 	}
@@ -210,7 +215,7 @@ func (p *PostgresDB) SaveKlinesBatch(ctx context.Context, symbol, timeframe stri
 }
 
 // saveBatch 保存一批K线数据
-func (p *PostgresDB) saveBatch(ctx context.Context, symbol, timeframe string, klines []*binance.KlineData) error {
+func (p *PostgresDB) saveBatch(ctx context.Context, symbol, timeframe string, klines []*cex.KlineData) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -272,7 +277,7 @@ func (p *PostgresDB) saveBatch(ctx context.Context, symbol, timeframe string, kl
 }
 
 // GetKlines 获取K线数据
-func (p *PostgresDB) GetKlines(ctx context.Context, symbol, timeframe string, startTime, endTime int64, limit int) ([]*binance.KlineData, error) {
+func (p *PostgresDB) GetKlines(ctx context.Context, symbol, timeframe string, startTime, endTime int64, limit int) ([]*cex.KlineData, error) {
 	query := `
 		SELECT open_time, close_time, open_price, high_price, low_price, close_price,
 		       volume, quote_volume, taker_buy_volume, taker_buy_quote_volume
@@ -307,9 +312,9 @@ func (p *PostgresDB) GetKlines(ctx context.Context, symbol, timeframe string, st
 	}
 	defer rows.Close()
 
-	var klines []*binance.KlineData
+	var klines []*cex.KlineData
 	for rows.Next() {
-		kline := &binance.KlineData{Symbol: symbol}
+		kline := &cex.KlineData{}
 		err := rows.Scan(
 			&kline.OpenTime, &kline.CloseTime,
 			&kline.Open, &kline.High, &kline.Low, &kline.Close,

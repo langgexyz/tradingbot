@@ -3,99 +3,58 @@ package trading
 import (
 	"context"
 	"fmt"
+	"time"
 
-	"go-build-stream-gateway-go-server-main/src/binance"
-	"go-build-stream-gateway-go-server-main/src/config"
-	"go-build-stream-gateway-go-server-main/src/database"
-	"go-build-stream-gateway-go-server-main/src/engine"
-	"go-build-stream-gateway-go-server-main/src/executor"
-	"go-build-stream-gateway-go-server-main/src/strategies"
-	"go-build-stream-gateway-go-server-main/src/strategy"
+	"tradingbot/src/cex"
+	"tradingbot/src/engine"
+	"tradingbot/src/executor"
+	"tradingbot/src/strategies"
+	"tradingbot/src/strategy"
+	"tradingbot/src/timeframes"
 
 	"github.com/shopspring/decimal"
 )
 
 // TradingSystem 交易系统（重构版）
 type TradingSystem struct {
-	config        *config.Config
-	binanceClient *binance.Client
-	database      *database.PostgresDB
-	klineManager  *database.KlineManager
+	cexClient     cex.CEXClient
 	tradingEngine *engine.TradingEngine
-	currentCEX    string // 当前使用的交易所
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
 // NewTradingSystem 创建新的交易系统
 func NewTradingSystem() (*TradingSystem, error) {
-	cfg := config.AppConfig
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &TradingSystem{
-		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
 	}, nil
 }
 
-// SetSymbolAndTimeframe 设置交易对和时间周期
-func (ts *TradingSystem) SetSymbolAndTimeframe(symbol, timeframe string) error {
-	return ts.SetSymbolTimeframeAndCEX(symbol, timeframe, "binance")
+// SetTradingPairAndTimeframe 设置交易对和时间周期
+func (ts *TradingSystem) SetTradingPairAndTimeframe(pair cex.TradingPair, timeframe string) error {
+	return ts.SetTradingPairTimeframeAndCEX(pair, timeframe, "binance")
 }
 
-// SetSymbolTimeframeAndCEX 设置交易对、时间周期和交易所
-func (ts *TradingSystem) SetSymbolTimeframeAndCEX(symbol, timeframe, cex string) error {
-	// 验证交易对是否在配置中支持
-	supported := false
-	for _, s := range config.AppConfig.Symbols {
-		if s.Symbol == symbol {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		supportedSymbols := make([]string, 0, len(config.AppConfig.Symbols))
-		for _, s := range config.AppConfig.Symbols {
-			supportedSymbols = append(supportedSymbols, s.Symbol)
-		}
-		if len(supportedSymbols) > 0 {
-			return fmt.Errorf("trading pair %s is not supported. Supported pairs: %v", symbol, supportedSymbols[:min(5, len(supportedSymbols))])
-		} else {
-			return fmt.Errorf("trading pair %s is not supported", symbol)
-		}
-	}
-
+// SetTradingPairTimeframeAndCEX 设置交易对、时间周期和交易所
+func (ts *TradingSystem) SetTradingPairTimeframeAndCEX(pair cex.TradingPair, timeframe, cexName string) error {
 	// 验证时间周期格式
-	originalTimeframe := ts.config.Trading.Timeframe
-	ts.config.Trading.Timeframe = timeframe
-	_, err := ts.config.GetTimeframe()
+	_, err := timeframes.ParseTimeframe(timeframe)
 	if err != nil {
-		ts.config.Trading.Timeframe = originalTimeframe
 		return fmt.Errorf("invalid timeframe: %s", timeframe)
 	}
 
-	// 验证CEX是否支持
-	supportedCEXs := ts.config.GetSupportedCEXs()
-	supported = false
-	for _, supportedCEX := range supportedCEXs {
-		if supportedCEX == cex {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		return fmt.Errorf("exchange %s is not supported. Supported exchanges: %v", cex, supportedCEXs)
+	// 设置时间周期到交易配置
+	TradingConfigValue.Timeframe = timeframe
+
+	// 初始化 CEX 客户端
+	if err := ts.initializeCEX(cexName); err != nil {
+		return fmt.Errorf("failed to initialize CEX: %w", err)
 	}
 
-	// 设置交易对、时间周期和交易所
-	ts.config.Trading.Symbol = symbol
-	ts.config.Trading.Timeframe = timeframe
-	ts.currentCEX = cex
-
-	// 验证完整配置
-	return ts.config.ValidateWithSymbol()
+	return nil
 }
 
 // min 辅助函数
@@ -106,116 +65,110 @@ func min(a, b int) int {
 	return b
 }
 
-// Initialize 初始化系统
-func (ts *TradingSystem) Initialize() error {
-	// 根据当前CEX获取对应的配置
-	cexConfig, dbConfig, err := ts.config.GetCEXConfig(ts.currentCEX)
+// initializeCEX 初始化 CEX 客户端和数据库连接
+func (ts *TradingSystem) initializeCEX(cexName string) error {
+	// 使用工厂模式创建 CEX 客户端（客户端内部已经初始化了数据库连接）
+	client, err := cex.CreateCEXClient(cexName)
 	if err != nil {
-		return fmt.Errorf("failed to get CEX config: %w", err)
+		return fmt.Errorf("failed to create CEX client: %w", err)
 	}
 
-	// 初始化CEX客户端（目前只支持Binance）
-	if ts.currentCEX != "binance" {
-		return fmt.Errorf("unsupported CEX: %s, only binance is supported", ts.currentCEX)
-	}
-
-	binanceConfig := cexConfig.(*config.BinanceConfig)
-	ts.binanceClient = binance.NewClient(
-		binanceConfig.APIKey,
-		binanceConfig.SecretKey,
-		binanceConfig.BaseURL,
-	)
-
-	// 尝试连接数据库（根据当前CEX选择对应的数据库）
-	if dbConfig.Host != "" {
-		fmt.Printf("🗄️ Connecting to %s database...", ts.currentCEX)
-		db, err := database.NewPostgresDB(
-			dbConfig.Host,
-			dbConfig.Port,
-			dbConfig.User,
-			dbConfig.Password,
-			dbConfig.DBName,
-			dbConfig.SSLMode,
-		)
-		if err != nil {
-			fmt.Printf(" failed: %v\n", err)
-			fmt.Println("⚠️ Database unavailable, using network only")
-		} else {
-			ts.database = db
-			ts.klineManager = database.NewKlineManager(db, ts.binanceClient)
-			fmt.Println(" connected!")
-		}
-	}
-
-	// 测试连接（如果不是回测模式）
-	if !ts.config.IsBacktestMode() {
-		err := ts.binanceClient.Ping(ts.ctx)
-		if err != nil {
-			return fmt.Errorf("failed to connect to Binance: %w", err)
-		}
-		fmt.Println("✓ Connected to Binance API")
-	}
+	ts.cexClient = client
 
 	return nil
 }
 
+// Initialize 初始化系统（保持向后兼容）
+func (ts *TradingSystem) Initialize() error {
+	// 如果 CEX 客户端已经初始化，则跳过
+	if ts.cexClient != nil {
+		return nil
+	}
+
+	// 默认使用 binance
+	return ts.initializeCEX("binance")
+}
+
 // RunBacktest 运行回测
-func (ts *TradingSystem) RunBacktest() (*BacktestStatistics, error) {
-	if !ts.config.IsBacktestMode() {
-		return nil, fmt.Errorf("not in backtest mode")
+func (ts *TradingSystem) RunBacktest(pair cex.TradingPair, startDate, endDate string) (*BacktestStatistics, error) {
+	return ts.RunBacktestWithParams(pair, startDate, endDate, nil)
+}
+
+// RunBacktestWithParams 使用指定策略参数运行回测
+func (ts *TradingSystem) RunBacktestWithParams(pair cex.TradingPair, startDate, endDate string, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
+	return ts.RunBacktestWithParamsAndCapital(pair, startDate, endDate, 10000.0, strategyParams)
+}
+
+// RunBacktestWithParamsAndCapital 使用指定策略参数和初始资金运行回测
+func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, startDate, endDate string, initialCapital float64, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
+
+	// 初始化系统
+	err := ts.Initialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize trading system: %w", err)
 	}
 
 	fmt.Println("🔄 Starting backtest...")
 
-	// 创建策略
-	var strategyImpl strategy.Strategy
-	switch ts.config.Strategy.Name {
-	case "bollinger_bands":
-		strategyImpl = strategies.NewBollingerBandsStrategy()
-		err := strategyImpl.SetParams(ts.config.GetStrategyParams())
-		if err != nil {
-			return nil, fmt.Errorf("failed to set strategy parameters: %w", err)
-		}
-		fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
-	default:
-		return nil, fmt.Errorf("unsupported strategy: %s", ts.config.Strategy.Name)
+	// 创建策略（目前只支持布林道策略）
+	strategyImpl := strategies.NewBollingerBandsStrategy()
+
+	// 使用传入的参数或默认参数
+	var params strategy.StrategyParams
+	if strategyParams != nil {
+		params = strategyParams
+	} else {
+		// 使用默认参数
+		params = strategy.GetDefaultBollingerBandsParams()
 	}
 
+	// 验证参数
+	if err := params.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid strategy parameters: %w", err)
+	}
+
+	err = strategyImpl.SetParams(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set strategy parameters: %w", err)
+	}
+	fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
+
 	// 创建回测执行器
-	initialCapital := decimal.NewFromFloat(ts.config.Trading.InitialCapital)
-	backtestExecutor := executor.NewBacktestExecutor(ts.config.Trading.Symbol, initialCapital)
-	backtestExecutor.SetCommission(ts.config.Backtest.Fee)
-	backtestExecutor.SetSlippage(ts.config.Backtest.Slippage)
+	initialCapitalDecimal := decimal.NewFromFloat(initialCapital)
+	backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
+
+	// 设置手续费（从CEX客户端获取）
+	fee := ts.cexClient.GetTradingFee()
+	backtestExecutor.SetCommission(fee)
 
 	// 获取时间周期
-	timeframe, err := ts.config.GetTimeframe()
+	timeframe, err := timeframes.ParseTimeframe(TradingConfigValue.Timeframe)
 	if err != nil {
 		return nil, fmt.Errorf("invalid timeframe: %w", err)
 	}
 
 	// 创建交易引擎
 	ts.tradingEngine = engine.NewTradingEngine(
-		ts.config.Trading.Symbol,
+		pair,
 		timeframe,
 		strategyImpl,
 		backtestExecutor,
-		ts.klineManager,
-		ts.binanceClient,
+		ts.cexClient,
 	)
 
 	// 设置交易参数
-	ts.tradingEngine.SetPositionSizePercent(ts.config.Trading.PositionSizePercent)
-	ts.tradingEngine.SetMinTradeAmount(ts.config.Trading.MinTradeAmount)
+	ts.tradingEngine.SetPositionSizePercent(TradingConfigValue.PositionSizePercent)
+	ts.tradingEngine.SetMinTradeAmount(TradingConfigValue.MinTradeAmount)
 
-	// 获取时间范围
-	startTime, err := ts.config.GetStartTime()
+	// 解析时间范围
+	startTime, err := time.Parse("2006-01-02", startDate)
 	if err != nil {
-		return nil, fmt.Errorf("invalid start time: %w", err)
+		return nil, fmt.Errorf("invalid start date format (expected YYYY-MM-DD): %w", err)
 	}
 
-	endTime, err := ts.config.GetEndTime()
+	endTime, err := time.Parse("2006-01-02", endDate)
 	if err != nil {
-		return nil, fmt.Errorf("invalid end time: %w", err)
+		return nil, fmt.Errorf("invalid end date format (expected YYYY-MM-DD): %w", err)
 	}
 
 	// 运行回测
@@ -230,6 +183,9 @@ func (ts *TradingSystem) RunBacktest() (*BacktestStatistics, error) {
 	stats := backtestExecutor.GetStatistics()
 	orders := backtestExecutor.GetOrders()
 
+	// 进行详细交易分析
+	trades, openPositions, avgHoldingTime, maxHoldingTime, minHoldingTime, avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor := AnalyzeTrades(orders)
+
 	return &BacktestStatistics{
 		InitialCapital:  stats["initial_capital"].(decimal.Decimal),
 		FinalPortfolio:  stats["final_portfolio"].(decimal.Decimal),
@@ -239,53 +195,87 @@ func (ts *TradingSystem) RunBacktest() (*BacktestStatistics, error) {
 		LosingTrades:    stats["losing_trades"].(int),
 		TotalCommission: stats["total_commission"].(decimal.Decimal),
 		Orders:          orders,
+
+		// 新增的详细分析
+		Trades:         trades,
+		OpenPositions:  openPositions,
+		AvgHoldingTime: avgHoldingTime,
+		MaxHoldingTime: maxHoldingTime,
+		MinHoldingTime: minHoldingTime,
+		AvgWinningPnL:  avgWinningPnL,
+		AvgLosingPnL:   avgLosingPnL,
+		MaxWin:         maxWin,
+		MaxLoss:        maxLoss,
+		ProfitFactor:   profitFactor,
 	}, nil
 }
 
 // RunLiveTrading 运行实时交易
-func (ts *TradingSystem) RunLiveTrading() error {
-	if ts.config.IsBacktestMode() {
-		return fmt.Errorf("cannot run live trading in backtest mode")
+func (ts *TradingSystem) RunLiveTrading(pair cex.TradingPair) error {
+	return ts.RunLiveTradingWithParams(pair, nil)
+}
+
+// RunLiveTradingWithParams 使用指定策略参数运行实时交易
+func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategyParams strategy.StrategyParams) error {
+	// 测试 CEX 连接
+	err := ts.cexClient.Ping(ts.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to CEX: %w", err)
+	}
+	fmt.Println("✓ Connected to CEX API")
+
+	// 初始化系统
+	err = ts.Initialize()
+	if err != nil {
+		return fmt.Errorf("failed to initialize trading system: %w", err)
 	}
 
 	fmt.Println("🔴 Starting live trading...")
 
-	// 创建策略
-	var strategyImpl strategy.Strategy
-	switch ts.config.Strategy.Name {
-	case "bollinger_bands":
-		strategyImpl = strategies.NewBollingerBandsStrategy()
-		err := strategyImpl.SetParams(ts.config.GetStrategyParams())
-		if err != nil {
-			return fmt.Errorf("failed to set strategy parameters: %w", err)
-		}
-		fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
-	default:
-		return fmt.Errorf("unsupported strategy: %s", ts.config.Strategy.Name)
+	// 创建策略（目前只支持布林道策略）
+	strategyImpl := strategies.NewBollingerBandsStrategy()
+
+	// 使用传入的参数或默认参数
+	var params strategy.StrategyParams
+	if strategyParams != nil {
+		params = strategyParams
+	} else {
+		// 使用默认参数
+		params = strategy.GetDefaultBollingerBandsParams()
 	}
 
+	// 验证参数
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("invalid strategy parameters: %w", err)
+	}
+
+	err = strategyImpl.SetParams(params)
+	if err != nil {
+		return fmt.Errorf("failed to set strategy parameters: %w", err)
+	}
+	fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
+
 	// 创建实盘执行器
-	liveExecutor := executor.NewLiveExecutor(ts.binanceClient, ts.config.Trading.Symbol)
+	liveExecutor := executor.NewLiveExecutor(ts.cexClient, pair)
 
 	// 获取时间周期
-	timeframe, err := ts.config.GetTimeframe()
+	timeframe, err := timeframes.ParseTimeframe(TradingConfigValue.Timeframe)
 	if err != nil {
 		return fmt.Errorf("invalid timeframe: %w", err)
 	}
 
 	// 创建交易引擎
 	ts.tradingEngine = engine.NewTradingEngine(
-		ts.config.Trading.Symbol,
+		pair,
 		timeframe,
 		strategyImpl,
 		liveExecutor,
-		ts.klineManager,
-		ts.binanceClient,
+		ts.cexClient,
 	)
 
 	// 设置交易参数
-	ts.tradingEngine.SetPositionSizePercent(ts.config.Trading.PositionSizePercent)
-	ts.tradingEngine.SetMinTradeAmount(ts.config.Trading.MinTradeAmount)
+	ts.tradingEngine.SetPositionSizePercent(TradingConfigValue.PositionSizePercent)
+	ts.tradingEngine.SetMinTradeAmount(TradingConfigValue.MinTradeAmount)
 
 	// 运行实盘交易
 	return ts.tradingEngine.RunLive(ts.ctx)
@@ -296,16 +286,21 @@ func (ts *TradingSystem) Stop() {
 	if ts.tradingEngine != nil {
 		ts.tradingEngine.Stop()
 	}
-	if ts.database != nil {
-		ts.database.Close()
-	}
 	ts.cancel()
 	fmt.Println("Trading system stopped")
 }
 
-// GetConfig 获取配置
-func (ts *TradingSystem) GetConfig() *config.Config {
-	return ts.config
+// TradeAnalysis 单笔交易分析
+type TradeAnalysis struct {
+	BuyOrder   executor.OrderResult  `json:"buy_order"`
+	SellOrder  *executor.OrderResult `json:"sell_order,omitempty"`
+	Duration   time.Duration         `json:"duration"`
+	PnL        decimal.Decimal       `json:"pnl"`
+	PnLPercent decimal.Decimal       `json:"pnl_percent"`
+	Commission decimal.Decimal       `json:"commission"`
+	IsOpen     bool                  `json:"is_open"`
+	BuyReason  string                `json:"buy_reason"`
+	SellReason string                `json:"sell_reason,omitempty"`
 }
 
 // BacktestStatistics 回测统计结果
@@ -318,16 +313,28 @@ type BacktestStatistics struct {
 	LosingTrades    int                    `json:"losing_trades"`
 	TotalCommission decimal.Decimal        `json:"total_commission"`
 	Orders          []executor.OrderResult `json:"orders"`
+
+	// 新增的详细分析
+	Trades         []TradeAnalysis `json:"trades"`
+	OpenPositions  []TradeAnalysis `json:"open_positions"`
+	AvgHoldingTime time.Duration   `json:"avg_holding_time"`
+	MaxHoldingTime time.Duration   `json:"max_holding_time"`
+	MinHoldingTime time.Duration   `json:"min_holding_time"`
+	AvgWinningPnL  decimal.Decimal `json:"avg_winning_pnl"`
+	AvgLosingPnL   decimal.Decimal `json:"avg_losing_pnl"`
+	MaxWin         decimal.Decimal `json:"max_win"`
+	MaxLoss        decimal.Decimal `json:"max_loss"`
+	ProfitFactor   decimal.Decimal `json:"profit_factor"`
 }
 
 // PrintBacktestResults 打印回测结果
-func (ts *TradingSystem) PrintBacktestResults(stats *BacktestStatistics) {
+func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *BacktestStatistics) {
 	fmt.Println("\n============================================================")
 	fmt.Println("📊 BACKTEST RESULTS")
 	fmt.Println("============================================================")
 	fmt.Printf("Strategy: Bollinger Bands Strategy\n")
-	fmt.Printf("Symbol: %s\n", ts.config.Trading.Symbol)
-	fmt.Printf("Timeframe: %s\n", ts.config.Trading.Timeframe)
+	fmt.Printf("Symbol: %s\n", pair.String())
+	fmt.Printf("Timeframe: %s\n", TradingConfigValue.Timeframe)
 	fmt.Printf("Initial Capital: $%.2f\n", stats.InitialCapital.InexactFloat64())
 
 	fmt.Println("\n📈 PERFORMANCE METRICS")
@@ -386,7 +393,180 @@ func (ts *TradingSystem) PrintBacktestResults(stats *BacktestStatistics) {
 		}
 	}
 
+	// 显示详细分析
+	fmt.Println("\n🔍 DETAILED ANALYSIS")
+	fmt.Println("------------------------------")
+
+	if len(stats.Trades) > 0 {
+		fmt.Printf("Completed Trades: %d\n", len(stats.Trades))
+		fmt.Printf("Average Holding Time: %v\n", formatDuration(stats.AvgHoldingTime))
+		fmt.Printf("Max Holding Time: %v\n", formatDuration(stats.MaxHoldingTime))
+		fmt.Printf("Min Holding Time: %v\n", formatDuration(stats.MinHoldingTime))
+
+		if !stats.AvgWinningPnL.IsZero() {
+			fmt.Printf("Average Winning P&L: $%.2f\n", stats.AvgWinningPnL.InexactFloat64())
+		}
+		if !stats.AvgLosingPnL.IsZero() {
+			fmt.Printf("Average Losing P&L: $%.2f\n", stats.AvgLosingPnL.InexactFloat64())
+		}
+		if !stats.MaxWin.IsZero() {
+			fmt.Printf("Max Win: $%.2f\n", stats.MaxWin.InexactFloat64())
+		}
+		if !stats.MaxLoss.IsZero() {
+			fmt.Printf("Max Loss: $%.2f\n", stats.MaxLoss.InexactFloat64())
+		}
+		if !stats.ProfitFactor.IsZero() {
+			fmt.Printf("Profit Factor: %.2f\n", stats.ProfitFactor.InexactFloat64())
+		}
+	}
+
+	// 显示未平仓订单
+	if len(stats.OpenPositions) > 0 {
+		fmt.Printf("\n🔓 OPEN POSITIONS: %d\n", len(stats.OpenPositions))
+		fmt.Println("--------------------------------------------------------------------------------")
+		fmt.Println("Buy Time   Buy Price    Quantity     Cost         Reason")
+		fmt.Println("--------------------------------------------------------------------------------")
+
+		for _, pos := range stats.OpenPositions {
+			cost := pos.BuyOrder.Price.Mul(pos.BuyOrder.Quantity)
+			fmt.Printf("%s %12.6f %12.6f $%10.2f %s\n",
+				pos.BuyOrder.Timestamp.Format("01-02 15:04"),
+				pos.BuyOrder.Price.InexactFloat64(),
+				pos.BuyOrder.Quantity.InexactFloat64(),
+				cost.InexactFloat64(),
+				pos.BuyReason,
+			)
+		}
+	}
+
+	// 显示每笔交易的详细情况
+	if len(stats.Trades) > 0 {
+		fmt.Printf("\n📊 ALL COMPLETED TRADES: %d\n", len(stats.Trades))
+		fmt.Println("================================================================================")
+		fmt.Println("序号 买入时间      买入价格      卖出时间      卖出价格      盈利%    净盈利$     持仓时间    卖出原因")
+		fmt.Println("================================================================================")
+
+		for i, trade := range stats.Trades {
+			// 计算盈利百分比
+			profitPercent := trade.PnL.Div(trade.BuyOrder.Price.Mul(trade.BuyOrder.Quantity)).Mul(decimal.NewFromInt(100))
+
+			// 确定卖出原因
+			sellReason := "触及上轨"
+			if trade.SellReason != "" {
+				if trade.SellReason == "strategy signal" {
+					sellReason = "触及上轨"
+				} else {
+					sellReason = trade.SellReason
+				}
+			}
+
+			fmt.Printf("%2d   %s  %12.8f  %s  %12.8f  %6.2f%%  $%9.2f  %8s   %s\n",
+				i+1,
+				trade.BuyOrder.Timestamp.Format("01-02 15:04"),
+				trade.BuyOrder.Price.InexactFloat64(),
+				trade.SellOrder.Timestamp.Format("01-02 15:04"),
+				trade.SellOrder.Price.InexactFloat64(),
+				profitPercent.InexactFloat64(),
+				trade.PnL.InexactFloat64(),
+				formatDuration(trade.Duration),
+				sellReason,
+			)
+		}
+
+		fmt.Println("================================================================================")
+
+		// 统计不同盈利范围的交易
+		fmt.Println("\n📈 PROFIT DISTRIBUTION")
+		fmt.Println("------------------------------")
+
+		ranges := map[string][2]float64{
+			"1-5%":   {1.0, 5.0},
+			"5-10%":  {5.0, 10.0},
+			"10-20%": {10.0, 20.0},
+			"20-30%": {20.0, 30.0},
+			"30%+":   {30.0, 1000.0},
+		}
+
+		for rangeName, bounds := range ranges {
+			count := 0
+			totalProfit := decimal.Zero
+
+			for _, trade := range stats.Trades {
+				profitPercent := trade.PnL.Div(trade.BuyOrder.Price.Mul(trade.BuyOrder.Quantity)).Mul(decimal.NewFromInt(100))
+				percent := profitPercent.InexactFloat64()
+
+				if percent >= bounds[0] && percent < bounds[1] {
+					count++
+					totalProfit = totalProfit.Add(trade.PnL)
+				}
+			}
+
+			if count > 0 {
+				avgProfit := totalProfit.Div(decimal.NewFromInt(int64(count)))
+				fmt.Printf("%s: %2d笔交易, 总盈利: $%8.2f, 平均: $%7.2f\n",
+					rangeName, count, totalProfit.InexactFloat64(), avgProfit.InexactFloat64())
+			}
+		}
+	}
+
+	// 显示最佳和最差交易
+	if len(stats.Trades) > 0 {
+		fmt.Println("\n🏆 BEST & WORST TRADES")
+		fmt.Println("--------------------------------------------------------------------------------")
+
+		var bestTrade, worstTrade *TradeAnalysis
+		for i := range stats.Trades {
+			trade := &stats.Trades[i]
+			if bestTrade == nil || trade.PnL.GreaterThan(bestTrade.PnL) {
+				bestTrade = trade
+			}
+			if worstTrade == nil || trade.PnL.LessThan(worstTrade.PnL) {
+				worstTrade = trade
+			}
+		}
+
+		if bestTrade != nil {
+			fmt.Printf("🥇 Best Trade: %s -> %s (%.2f%%) P&L: $%.2f Duration: %v\n",
+				bestTrade.BuyOrder.Timestamp.Format("01-02 15:04"),
+				bestTrade.SellOrder.Timestamp.Format("01-02 15:04"),
+				bestTrade.PnLPercent.InexactFloat64(),
+				bestTrade.PnL.InexactFloat64(),
+				formatDuration(bestTrade.Duration),
+			)
+		}
+
+		if worstTrade != nil {
+			fmt.Printf("🥉 Worst Trade: %s -> %s (%.2f%%) P&L: $%.2f Duration: %v\n",
+				worstTrade.BuyOrder.Timestamp.Format("01-02 15:04"),
+				worstTrade.SellOrder.Timestamp.Format("01-02 15:04"),
+				worstTrade.PnLPercent.InexactFloat64(),
+				worstTrade.PnL.InexactFloat64(),
+				formatDuration(worstTrade.Duration),
+			)
+		}
+	}
+
 	fmt.Println("\n============================================================")
+}
+
+// formatDuration 格式化时间间隔
+func formatDuration(d time.Duration) string {
+	if d == 0 {
+		return "0"
+	}
+
+	hours := int(d.Hours())
+	days := hours / 24
+	hours = hours % 24
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh", days, hours)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh", hours)
+	} else {
+		minutes := int(d.Minutes())
+		return fmt.Sprintf("%dm", minutes)
+	}
 }
 
 // findPreviousBuyOrder 查找前一个买入订单
@@ -397,4 +577,137 @@ func findPreviousBuyOrder(orders []executor.OrderResult, currentIndex int) *exec
 		}
 	}
 	return nil
+}
+
+// AnalyzeTrades 分析交易数据，计算详细统计信息
+func AnalyzeTrades(orders []executor.OrderResult) ([]TradeAnalysis, []TradeAnalysis, time.Duration, time.Duration, time.Duration, decimal.Decimal, decimal.Decimal, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
+	var trades []TradeAnalysis
+	var openPositions []TradeAnalysis
+	var holdingTimes []time.Duration
+	var winningPnLs []decimal.Decimal
+	var losingPnLs []decimal.Decimal
+
+	// 配对买入和卖出订单
+	var pendingBuys []executor.OrderResult
+
+	for _, order := range orders {
+		if order.Side == executor.OrderSideBuy {
+			pendingBuys = append(pendingBuys, order)
+		} else if order.Side == executor.OrderSideSell && len(pendingBuys) > 0 {
+			// 找到对应的买入订单（FIFO）
+			buyOrder := pendingBuys[0]
+			pendingBuys = pendingBuys[1:]
+
+			// 计算持仓时间
+			duration := order.Timestamp.Sub(buyOrder.Timestamp)
+
+			// 计算盈亏
+			buyValue := buyOrder.Price.Mul(buyOrder.Quantity)
+			sellValue := order.Price.Mul(order.Quantity)
+			pnl := sellValue.Sub(buyValue)
+			pnlPercent := pnl.Div(buyValue).Mul(decimal.NewFromInt(100))
+
+			// 计算手续费
+			commission := buyOrder.Commission.Add(order.Commission)
+
+			trade := TradeAnalysis{
+				BuyOrder:   buyOrder,
+				SellOrder:  &order,
+				Duration:   duration,
+				PnL:        pnl.Sub(commission),
+				PnLPercent: pnlPercent,
+				Commission: commission,
+				IsOpen:     false,
+				BuyReason:  "strategy signal", // 默认原因
+				SellReason: "strategy signal", // 默认原因
+			}
+
+			trades = append(trades, trade)
+			holdingTimes = append(holdingTimes, duration)
+
+			if trade.PnL.IsPositive() {
+				winningPnLs = append(winningPnLs, trade.PnL)
+			} else {
+				losingPnLs = append(losingPnLs, trade.PnL)
+			}
+		}
+	}
+
+	// 处理未平仓订单
+	for _, buyOrder := range pendingBuys {
+		trade := TradeAnalysis{
+			BuyOrder:   buyOrder,
+			SellOrder:  nil,
+			Duration:   0,
+			PnL:        decimal.Zero,
+			PnLPercent: decimal.Zero,
+			Commission: buyOrder.Commission,
+			IsOpen:     true,
+			BuyReason:  "strategy signal", // 默认原因
+			SellReason: "",
+		}
+		openPositions = append(openPositions, trade)
+	}
+
+	// 计算统计信息
+	var avgHoldingTime, maxHoldingTime, minHoldingTime time.Duration
+	var avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor decimal.Decimal
+
+	if len(holdingTimes) > 0 {
+		var totalDuration time.Duration
+		maxHoldingTime = holdingTimes[0]
+		minHoldingTime = holdingTimes[0]
+
+		for _, duration := range holdingTimes {
+			totalDuration += duration
+			if duration > maxHoldingTime {
+				maxHoldingTime = duration
+			}
+			if duration < minHoldingTime {
+				minHoldingTime = duration
+			}
+		}
+		avgHoldingTime = totalDuration / time.Duration(len(holdingTimes))
+	}
+
+	if len(winningPnLs) > 0 {
+		var totalWinning decimal.Decimal
+		maxWin = winningPnLs[0]
+		for _, pnl := range winningPnLs {
+			totalWinning = totalWinning.Add(pnl)
+			if pnl.GreaterThan(maxWin) {
+				maxWin = pnl
+			}
+		}
+		avgWinningPnL = totalWinning.Div(decimal.NewFromInt(int64(len(winningPnLs))))
+	}
+
+	if len(losingPnLs) > 0 {
+		var totalLosing decimal.Decimal
+		maxLoss = losingPnLs[0]
+		for _, pnl := range losingPnLs {
+			totalLosing = totalLosing.Add(pnl)
+			if pnl.LessThan(maxLoss) {
+				maxLoss = pnl
+			}
+		}
+		avgLosingPnL = totalLosing.Div(decimal.NewFromInt(int64(len(losingPnLs))))
+	}
+
+	// 计算盈利因子
+	if len(winningPnLs) > 0 && len(losingPnLs) > 0 {
+		totalWinning := decimal.Zero
+		totalLosing := decimal.Zero
+		for _, pnl := range winningPnLs {
+			totalWinning = totalWinning.Add(pnl)
+		}
+		for _, pnl := range losingPnLs {
+			totalLosing = totalLosing.Add(pnl.Abs())
+		}
+		if totalLosing.IsPositive() {
+			profitFactor = totalWinning.Div(totalLosing)
+		}
+	}
+
+	return trades, openPositions, avgHoldingTime, maxHoldingTime, minHoldingTime, avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor
 }

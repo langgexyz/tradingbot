@@ -4,8 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-
-	"go-build-stream-gateway-go-server-main/src/binance"
+	"tradingbot/src/binance"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/shopspring/decimal"

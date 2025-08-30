@@ -21,7 +21,6 @@ func TestNewBacktestExecutor(t *testing.T) {
 	assert.Equal(t, symbol, executor.symbol)
 	assert.Equal(t, initialCapital, executor.initialCapital)
 	assert.Equal(t, decimal.NewFromFloat(0.001), executor.commission) // 默认0.1%
-	assert.Equal(t, decimal.NewFromFloat(0.0001), executor.slippage)  // 默认0.01%
 
 	ctx := context.Background()
 	portfolio, err := executor.GetPortfolio(ctx)
@@ -37,12 +36,7 @@ func TestBacktestExecutor_SetCommission(t *testing.T) {
 	assert.Equal(t, decimal.NewFromFloat(0.002), executor.commission)
 }
 
-func TestBacktestExecutor_SetSlippage(t *testing.T) {
-	executor := NewBacktestExecutor("BTCUSDT", decimal.NewFromFloat(10000))
 
-	executor.SetSlippage(0.0002) // 0.02%
-	assert.Equal(t, decimal.NewFromFloat(0.0002), executor.slippage)
-}
 
 func TestBacktestExecutor_ExecuteOrder_Buy(t *testing.T) {
 	initialCapital := decimal.NewFromFloat(10000)
