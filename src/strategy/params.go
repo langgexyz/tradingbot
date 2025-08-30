@@ -15,7 +15,8 @@ type BollingerBandsParams struct {
 	CooldownBars        int     // 冷却期K线数，默认1
 
 	// 卖出策略参数
-	SellStrategyName string // 卖出策略名称，默认"moderate"
+	SellStrategyName   string             // 卖出策略名称，默认"moderate"
+	SellStrategyParams map[string]float64 // 卖出策略用户参数，用于覆盖默认配置
 }
 
 // GetDefaultBollingerBandsParams 获取默认的布林道策略参数

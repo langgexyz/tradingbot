@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"tradingbot/src/cex"
@@ -55,6 +56,42 @@ func (ts *TradingSystem) SetTradingPairTimeframeAndCEX(pair cex.TradingPair, tim
 	}
 
 	return nil
+}
+
+// SetTradingPairFromStrings 从字符串创建交易对并设置
+func (ts *TradingSystem) SetTradingPairFromStrings(base, quote, timeframe, cexName string) error {
+	pair := cex.TradingPair{
+		Base:  strings.ToUpper(base),
+		Quote: strings.ToUpper(quote),
+	}
+	return ts.SetTradingPairTimeframeAndCEX(pair, timeframe, cexName)
+}
+
+// RunBacktestFromStrings 从字符串参数运行回测
+func (ts *TradingSystem) RunBacktestFromStrings(base, quote, startDate, endDate string, initialCapital float64, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
+	pair := cex.TradingPair{
+		Base:  strings.ToUpper(base),
+		Quote: strings.ToUpper(quote),
+	}
+	return ts.RunBacktestWithParamsAndCapital(pair, startDate, endDate, initialCapital, strategyParams)
+}
+
+// RunLiveTradingFromStrings 从字符串参数运行实盘交易
+func (ts *TradingSystem) RunLiveTradingFromStrings(base, quote string, strategyParams strategy.StrategyParams) error {
+	pair := cex.TradingPair{
+		Base:  strings.ToUpper(base),
+		Quote: strings.ToUpper(quote),
+	}
+	return ts.RunLiveTradingWithParams(pair, strategyParams)
+}
+
+// PrintBacktestResultsFromStrings 从字符串参数打印回测结果
+func (ts *TradingSystem) PrintBacktestResultsFromStrings(base, quote string, stats *BacktestStatistics) {
+	pair := cex.TradingPair{
+		Base:  strings.ToUpper(base),
+		Quote: strings.ToUpper(quote),
+	}
+	ts.PrintBacktestResults(pair, stats)
 }
 
 // min 辅助函数
@@ -186,6 +223,10 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 	// 进行详细交易分析
 	trades, openPositions, avgHoldingTime, maxHoldingTime, minHoldingTime, avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor := AnalyzeTrades(orders)
 
+	// 计算最大回撤
+	capitalForDrawdown := stats["initial_capital"].(decimal.Decimal)
+	drawdownInfo := CalculateDrawdown(orders, capitalForDrawdown)
+
 	return &BacktestStatistics{
 		InitialCapital:  stats["initial_capital"].(decimal.Decimal),
 		FinalPortfolio:  stats["final_portfolio"].(decimal.Decimal),
@@ -207,6 +248,13 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 		MaxWin:         maxWin,
 		MaxLoss:        maxLoss,
 		ProfitFactor:   profitFactor,
+
+		// 最大回撤统计
+		MaxDrawdown:        drawdownInfo.MaxDrawdown,
+		MaxDrawdownPercent: drawdownInfo.MaxDrawdownPercent,
+		DrawdownDuration:   drawdownInfo.DrawdownDuration,
+		CurrentDrawdown:    drawdownInfo.CurrentDrawdown,
+		PeakPortfolioValue: drawdownInfo.PeakValue,
 	}, nil
 }
 
@@ -325,6 +373,13 @@ type BacktestStatistics struct {
 	MaxWin         decimal.Decimal `json:"max_win"`
 	MaxLoss        decimal.Decimal `json:"max_loss"`
 	ProfitFactor   decimal.Decimal `json:"profit_factor"`
+
+	// 最大回撤相关统计
+	MaxDrawdown        decimal.Decimal `json:"max_drawdown"`         // 最大回撤金额
+	MaxDrawdownPercent decimal.Decimal `json:"max_drawdown_percent"` // 最大回撤百分比
+	DrawdownDuration   time.Duration   `json:"drawdown_duration"`    // 最大回撤持续时间
+	CurrentDrawdown    decimal.Decimal `json:"current_drawdown"`     // 当前回撤
+	PeakPortfolioValue decimal.Decimal `json:"peak_portfolio_value"` // 历史最高组合价值
 }
 
 // PrintBacktestResults 打印回测结果
@@ -546,6 +601,31 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 		}
 	}
 
+	// 显示最大回撤信息
+	fmt.Println("\n📉 RISK METRICS")
+	fmt.Println("--------------------------------------------------------------------------------")
+	fmt.Printf("Max Drawdown: $%.2f (%.2f%%)\n",
+		stats.MaxDrawdown.InexactFloat64(),
+		stats.MaxDrawdownPercent.InexactFloat64())
+
+	if stats.DrawdownDuration > 0 {
+		fmt.Printf("Drawdown Duration: %v\n", formatDuration(stats.DrawdownDuration))
+	}
+
+	fmt.Printf("Peak Portfolio Value: $%.2f\n", stats.PeakPortfolioValue.InexactFloat64())
+
+	if stats.CurrentDrawdown.IsPositive() {
+		currentDrawdownPercent := decimal.Zero
+		if stats.PeakPortfolioValue.IsPositive() {
+			currentDrawdownPercent = stats.CurrentDrawdown.Div(stats.PeakPortfolioValue).Mul(decimal.NewFromInt(100))
+		}
+		fmt.Printf("Current Drawdown: $%.2f (%.2f%%)\n",
+			stats.CurrentDrawdown.InexactFloat64(),
+			currentDrawdownPercent.InexactFloat64())
+	} else {
+		fmt.Printf("Current Drawdown: $0.00 (0.00%%)\n")
+	}
+
 	fmt.Println("\n============================================================")
 }
 
@@ -710,4 +790,114 @@ func AnalyzeTrades(orders []executor.OrderResult) ([]TradeAnalysis, []TradeAnaly
 	}
 
 	return trades, openPositions, avgHoldingTime, maxHoldingTime, minHoldingTime, avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor
+}
+
+// DrawdownInfo 回撤信息结构
+type DrawdownInfo struct {
+	MaxDrawdown        decimal.Decimal // 最大回撤金额
+	MaxDrawdownPercent decimal.Decimal // 最大回撤百分比
+	DrawdownDuration   time.Duration   // 最大回撤持续时间
+	CurrentDrawdown    decimal.Decimal // 当前回撤
+	PeakValue          decimal.Decimal // 历史最高价值
+}
+
+// CalculateDrawdown 计算最大回撤
+func CalculateDrawdown(orders []executor.OrderResult, initialCapital decimal.Decimal) DrawdownInfo {
+	if len(orders) == 0 {
+		return DrawdownInfo{
+			PeakValue: initialCapital,
+		}
+	}
+
+	var drawdownInfo DrawdownInfo
+	currentCash := initialCapital
+	peakValue := initialCapital
+	maxDrawdown := decimal.Zero
+	maxDrawdownPercent := decimal.Zero
+
+	// 回撤开始和结束时间（用于计算持续时间）
+	var drawdownStartTime, maxDrawdownStartTime time.Time
+	var maxDrawdownDuration time.Duration
+	inDrawdown := false
+
+	// 跟踪买卖订单配对以计算实际盈亏
+	var pendingBuys []executor.OrderResult
+
+	// 按时间顺序处理每个订单，计算组合价值变化
+	for _, order := range orders {
+		if order.Side == executor.OrderSideBuy {
+			// 买入：现金减少，记录买入订单
+			currentCash = currentCash.Sub(order.Price.Mul(order.Quantity)).Sub(order.Commission)
+			pendingBuys = append(pendingBuys, order)
+		} else if order.Side == executor.OrderSideSell && len(pendingBuys) > 0 {
+			// 卖出：现金增加，移除对应的买入订单
+			pendingBuys = pendingBuys[1:]
+
+			// 卖出获得的现金
+			sellValue := order.Price.Mul(order.Quantity)
+			currentCash = currentCash.Add(sellValue).Sub(order.Commission)
+		}
+
+		// 当前组合价值 = 现金 + 持仓价值（按当前价格计算）
+		currentValue := currentCash
+		for _, buyOrder := range pendingBuys {
+			// 持仓按当前价格估值（这里简化使用卖出价格）
+			positionValue := buyOrder.Quantity.Mul(order.Price)
+			currentValue = currentValue.Add(positionValue)
+		}
+
+		// 更新峰值
+		if currentValue.GreaterThan(peakValue) {
+			peakValue = currentValue
+			// 如果创新高，结束回撤期
+			if inDrawdown {
+				inDrawdown = false
+			}
+		}
+
+		// 计算当前回撤
+		currentDrawdown := peakValue.Sub(currentValue)
+		currentDrawdownPercent := decimal.Zero
+		if peakValue.IsPositive() {
+			currentDrawdownPercent = currentDrawdown.Div(peakValue).Mul(decimal.NewFromInt(100))
+		}
+
+		// 更新最大回撤
+		if currentDrawdown.GreaterThan(maxDrawdown) {
+			maxDrawdown = currentDrawdown
+			maxDrawdownPercent = currentDrawdownPercent
+			maxDrawdownStartTime = drawdownStartTime
+		}
+
+		// 检查是否进入回撤期
+		if currentDrawdown.IsPositive() && !inDrawdown {
+			inDrawdown = true
+			drawdownStartTime = order.Timestamp
+		}
+
+		// 计算最大回撤持续时间
+		if inDrawdown && drawdownStartTime.Equal(maxDrawdownStartTime) {
+			maxDrawdownDuration = order.Timestamp.Sub(maxDrawdownStartTime)
+		}
+	}
+
+	// 计算最终的当前回撤
+	finalCash := currentCash
+	finalValue := finalCash
+	for _, buyOrder := range pendingBuys {
+		// 对于未平仓的持仓，使用最后的价格估值
+		if len(orders) > 0 {
+			lastPrice := orders[len(orders)-1].Price
+			positionValue := buyOrder.Quantity.Mul(lastPrice)
+			finalValue = finalValue.Add(positionValue)
+		}
+	}
+
+	drawdownInfo.MaxDrawdown = maxDrawdown
+	drawdownInfo.MaxDrawdownPercent = maxDrawdownPercent
+	drawdownInfo.DrawdownDuration = maxDrawdownDuration
+	drawdownInfo.CurrentDrawdown = peakValue.Sub(finalValue)
+	drawdownInfo.PeakValue = peakValue
+
+	return drawdownInfo
 }

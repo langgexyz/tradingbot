@@ -3,7 +3,6 @@ module tradingbot
 go 1.24.5
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/adshao/go-binance/v2 v2.4.5
 	github.com/lib/pq v1.10.9
 	github.com/shopspring/decimal v1.3.1

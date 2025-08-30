@@ -84,12 +84,21 @@ func (s *BollingerBandsStrategy) SetParams(params strategy.StrategyParams) error
 		// 设置卖出策略
 		s.SellStrategyName = bollingerParams.SellStrategyName
 
-		// 创建卖出策略实例
-		sellConfigs := strategy.GetDefaultSellStrategyConfigs()
-		if sellConfig, exists := sellConfigs[s.SellStrategyName]; exists {
-			sellStrategy, err := strategy.CreateSellStrategy(sellConfig)
+		// 创建卖出策略实例，支持用户参数
+		if bollingerParams.SellStrategyParams != nil && len(bollingerParams.SellStrategyParams) > 0 {
+			// 使用用户参数创建策略
+			sellStrategy, err := strategy.CreateSellStrategyWithParams(s.SellStrategyName, bollingerParams.SellStrategyParams)
 			if err == nil {
 				s.sellStrategy = sellStrategy
+			}
+		} else {
+			// 使用默认配置创建策略
+			sellConfigs := strategy.GetDefaultSellStrategyConfigs()
+			if sellConfig, exists := sellConfigs[s.SellStrategyName]; exists {
+				sellStrategy, err := strategy.CreateSellStrategy(sellConfig)
+				if err == nil {
+					s.sellStrategy = sellStrategy
+				}
 			}
 		}
 	} else {
@@ -172,32 +181,12 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 		s.lastTradePrice = currentPrice
 	}
 
-	// 卖出信号：价格触及上轨且有持仓且确保盈利至少20%
-	if currentPrice.GreaterThanOrEqual(bb.UpperBand) && !portfolio.Position.IsZero() &&
-		!s.lastTradePrice.IsZero() && currentPrice.GreaterThan(s.lastTradePrice) {
-
-		pnlPercent := currentPrice.Sub(s.lastTradePrice).Div(s.lastTradePrice).Mul(decimal.NewFromInt(100))
-		minProfitPercent := decimal.NewFromFloat(20.0) // 最小盈利20%
-
-		// 只有盈利达到20%以上才卖出
-		if pnlPercent.GreaterThanOrEqual(minProfitPercent) {
-			signals = append(signals, &strategy.Signal{
-				Type: "SELL",
-				Reason: fmt.Sprintf("price %.4f touched upper band %.4f with profit %.2f%% (>20%%)",
-					currentPrice.InexactFloat64(), bb.UpperBand.InexactFloat64(), pnlPercent.InexactFloat64()),
-				Strength:  0.8,
-				Timestamp: kline.OpenTime.Unix() * 1000,
-			})
-
-			s.lastTradeBar = s.currentBar
-			s.lastTradePrice = decimal.Zero
-		}
-	}
+	// 卖出决策完全由SellStrategy处理，这里不再生成卖出信号
 
 	return signals
 }
 
-// checkStopConditions 检查止损止盈条件（智能卖出策略）
+// checkStopConditions 检查止损止盈条件（使用卖出策略）
 func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
 	var signals []*strategy.Signal
 

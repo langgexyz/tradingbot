@@ -2,6 +2,8 @@ package strategy
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"tradingbot/src/cex"
@@ -49,6 +51,12 @@ const (
 	SellStrategyPartial   SellStrategyType = "partial"   // 分批止盈
 )
 
+// PartialLevel 分批止盈配置
+type PartialLevel struct {
+	ProfitPercent float64 `json:"profit_percent"` // 盈利百分比
+	SellPercent   float64 `json:"sell_percent"`   // 卖出仓位百分比
+}
+
 // SellStrategyConfig 卖出策略配置
 type SellStrategyConfig struct {
 	Type                 SellStrategyType `json:"type"`
@@ -57,12 +65,6 @@ type SellStrategyConfig struct {
 	MinProfitForTrailing float64          `json:"min_profit_for_trailing"` // 启用移动止盈的最小盈利
 	MaxHoldingDays       int              `json:"max_holding_days"`        // 最大持仓天数
 	PartialLevels        []PartialLevel   `json:"partial_levels"`          // 分批止盈配置
-}
-
-// PartialLevel 分批止盈配置
-type PartialLevel struct {
-	ProfitPercent float64 `json:"profit_percent"` // 盈利百分比
-	SellPercent   float64 `json:"sell_percent"`   // 卖出仓位百分比
 }
 
 // CreateSellStrategy 创建卖出策略
@@ -124,4 +126,65 @@ func GetDefaultSellStrategyConfigs() map[string]*SellStrategyConfig {
 			},
 		},
 	}
+}
+
+// ParseSellStrategyParams 解析卖出策略参数字符串
+func ParseSellStrategyParams(paramsStr string) (map[string]float64, error) {
+	params := make(map[string]float64)
+
+	if paramsStr == "" {
+		return params, nil
+	}
+
+	// 解析格式: "key1=value1,key2=value2"
+	pairs := strings.Split(paramsStr, ",")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+
+		parts := strings.Split(pair, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid parameter format: %s (expected key=value)", pair)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		valueStr := strings.TrimSpace(parts[1])
+
+		value, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid parameter value for %s: %s", key, valueStr)
+		}
+
+		params[key] = value
+	}
+
+	return params, nil
+}
+
+// CreateSellStrategyWithParams 使用用户参数创建卖出策略
+func CreateSellStrategyWithParams(strategyName string, userParams map[string]float64) (SellStrategy, error) {
+	// 获取默认配置
+	defaultConfigs := GetDefaultSellStrategyConfigs()
+	config, exists := defaultConfigs[strategyName]
+	if !exists {
+		return nil, fmt.Errorf("unknown sell strategy: %s", strategyName)
+	}
+
+	// 复制配置以避免修改默认值
+	configCopy := *config
+
+	// 根据用户参数覆盖默认值
+	if takeProfit, ok := userParams["take_profit"]; ok {
+		configCopy.FixedTakeProfit = takeProfit
+	}
+	if trailingPercent, ok := userParams["trailing_percent"]; ok {
+		configCopy.TrailingPercent = trailingPercent
+	}
+	if minProfit, ok := userParams["min_profit"]; ok {
+		configCopy.MinProfitForTrailing = minProfit
+	}
+
+	return CreateSellStrategy(&configCopy)
 }

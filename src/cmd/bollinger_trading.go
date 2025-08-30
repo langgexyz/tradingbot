@@ -46,6 +46,7 @@ func RegisterBollingerBacktestCmd() {
 
 	// 卖出策略参数
 	var sellStrategy string
+	var sellStrategyParams string
 	var listSellStrategies bool
 
 	cmd.RegisterCmd("bollinger-backtest", "run Bollinger Bands backtest", func(args *arg.Arg) {
@@ -69,6 +70,7 @@ func RegisterBollingerBacktestCmd() {
 
 		// 卖出策略参数
 		args.String(&sellStrategy, "sell-strategy", "sell strategy (conservative, moderate, aggressive, trailing_5, trailing_10, combo_smart, partial_pyramid)")
+		args.String(&sellStrategyParams, "sell-strategy-params", "sell strategy parameters (e.g., 'take_profit=0.25' for 25% fixed profit)")
 		args.Bool(&listSellStrategies, "list-sell-strategies", "list all available sell strategies")
 
 		args.Parse()
@@ -148,6 +150,17 @@ func RegisterBollingerBacktestCmd() {
 			endDate = time.Now().Format("2006-01-02")
 		}
 
+		// 解析卖出策略参数
+		var parsedSellParams map[string]float64
+		var err error
+		if sellStrategyParams != "" {
+			parsedSellParams, err = strategy.ParseSellStrategyParams(sellStrategyParams)
+			if err != nil {
+				fmt.Printf("❌ Failed to parse sell strategy parameters: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		// 创建策略参数
 		strategyParams := &strategy.BollingerBandsParams{
 			Period:              period,
@@ -158,10 +171,11 @@ func RegisterBollingerBacktestCmd() {
 			TakeProfitPercent:   takeProfitPercent,
 			CooldownBars:        cooldownBars,
 			SellStrategyName:    sellStrategy,
+			SellStrategyParams:  parsedSellParams,
 		}
 
 		// 运行回测系统
-		err := runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
+		err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
 		if err != nil {
 			fmt.Printf("❌ Trading system error: %v\n", err)
 			os.Exit(1)
@@ -184,11 +198,8 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 		return fmt.Errorf("failed to create trading system: %w", err)
 	}
 
-	// 创建交易对
-	pair := CreateTradingPair(base, quote)
-
 	// 设置交易对、时间周期和交易所
-	err = tradingSystem.SetTradingPairTimeframeAndCEX(pair, timeframe, cex)
+	err = tradingSystem.SetTradingPairFromStrings(base, quote, timeframe, cex)
 	if err != nil {
 		return fmt.Errorf("failed to set trading pair, timeframe and CEX: %w", err)
 	}
@@ -214,13 +225,15 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 	// 运行回测
 	fmt.Printf("📊 Running in backtest mode from %s to %s...\n", startDate, endDate)
 	fmt.Printf("💰 Initial Capital: $%.2f\n", initialCapital)
-	stats, err := tradingSystem.RunBacktestWithParamsAndCapital(pair, startDate, endDate, initialCapital, strategyParams)
+
+	// 运行回测
+	stats, err := tradingSystem.RunBacktestFromStrings(base, quote, startDate, endDate, initialCapital, strategyParams)
 	if err != nil {
 		return fmt.Errorf("backtest failed: %w", err)
 	}
 
 	// 打印结果
-	tradingSystem.PrintBacktestResults(pair, stats)
+	tradingSystem.PrintBacktestResultsFromStrings(base, quote, stats)
 
 	return nil
 }
@@ -245,6 +258,7 @@ func RegisterBollingerLiveCmd() {
 
 	// 卖出策略参数
 	var sellStrategy string
+	var sellStrategyParams string
 	var listSellStrategies bool
 
 	cmd.RegisterCmd("bollinger-live", "run Bollinger Bands live trading", func(args *arg.Arg) {
@@ -266,6 +280,7 @@ func RegisterBollingerLiveCmd() {
 
 		// 卖出策略参数
 		args.String(&sellStrategy, "sell-strategy", "sell strategy (conservative, moderate, aggressive, trailing_5, trailing_10, combo_smart, partial_pyramid)")
+		args.String(&sellStrategyParams, "sell-strategy-params", "sell strategy parameters (e.g., 'take_profit=0.25' for 25% fixed profit)")
 		args.Bool(&listSellStrategies, "list-sell-strategies", "list all available sell strategies")
 
 		args.Parse()
@@ -340,6 +355,17 @@ func RegisterBollingerLiveCmd() {
 			sellStrategy = "moderate" // 默认使用适中策略
 		}
 
+		// 解析卖出策略参数
+		var parsedSellParams map[string]float64
+		var err error
+		if sellStrategyParams != "" {
+			parsedSellParams, err = strategy.ParseSellStrategyParams(sellStrategyParams)
+			if err != nil {
+				fmt.Printf("❌ Failed to parse sell strategy parameters: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		// 创建策略参数
 		strategyParams := &strategy.BollingerBandsParams{
 			Period:              period,
@@ -350,10 +376,11 @@ func RegisterBollingerLiveCmd() {
 			TakeProfitPercent:   takeProfitPercent,
 			CooldownBars:        cooldownBars,
 			SellStrategyName:    sellStrategy,
+			SellStrategyParams:  parsedSellParams,
 		}
 
 		// 运行实盘交易
-		err := runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams)
+		err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams)
 		if err != nil {
 			fmt.Printf("❌ Error: %v\n", err)
 			os.Exit(1)
@@ -378,11 +405,8 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 	}
 	defer tradingSystem.Stop()
 
-	// 创建交易对
-	pair := CreateTradingPair(base, quote)
-
 	// 设置交易对和时间框架
-	err = tradingSystem.SetTradingPairTimeframeAndCEX(pair, timeframe, cex)
+	err = tradingSystem.SetTradingPairFromStrings(base, quote, timeframe, cex)
 	if err != nil {
 		return fmt.Errorf("failed to set trading parameters: %w", err)
 	}
@@ -403,7 +427,8 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 	fmt.Println("⚠️  WARNING: This will use real money!")
 	fmt.Println("Press Ctrl+C to stop...")
 
-	err = tradingSystem.RunLiveTradingWithParams(pair, strategyParams)
+	// 运行实盘交易
+	err = tradingSystem.RunLiveTradingFromStrings(base, quote, strategyParams)
 	if err != nil {
 		return fmt.Errorf("live trading failed: %w", err)
 	}
@@ -425,22 +450,32 @@ func listAvailableSellStrategies() {
 		switch config.Type {
 		case strategy.SellStrategyFixed:
 			fmt.Printf("   Take Profit: %.1f%%\n", config.FixedTakeProfit*100)
+			fmt.Printf("   Custom: --sell-strategy-params \"take_profit=0.25\" (for 25%%)\n")
 		case strategy.SellStrategyTrailing:
 			fmt.Printf("   Trailing: %.1f%% after %.1f%% profit\n",
 				config.TrailingPercent*100, config.MinProfitForTrailing*100)
+			fmt.Printf("   Custom: --sell-strategy-params \"trailing_percent=0.08,min_profit=0.18\"\n")
 		case strategy.SellStrategyCombo:
 			fmt.Printf("   Fixed: %.1f%%, Trailing: %.1f%% after %.1f%%\n",
 				config.FixedTakeProfit*100, config.TrailingPercent*100, config.MinProfitForTrailing*100)
 			fmt.Printf("   Max Holding: %d days\n", config.MaxHoldingDays)
+			fmt.Printf("   Custom: --sell-strategy-params \"take_profit=0.22,trailing_percent=0.06\"\n")
 		case strategy.SellStrategyPartial:
 			fmt.Printf("   Levels: %d\n", len(config.PartialLevels))
 			for i, level := range config.PartialLevels {
 				fmt.Printf("     L%d: %.0f%% profit -> sell %.0f%%\n",
 					i+1, level.ProfitPercent*100, level.SellPercent*100)
 			}
+			fmt.Printf("   Custom: (partial levels are complex, use defaults)\n")
 		}
 		fmt.Println()
 	}
+
+	fmt.Printf("💡 Parameter Usage Examples:\n")
+	fmt.Printf("   Fixed 25%% profit: --sell-strategy conservative --sell-strategy-params \"take_profit=0.25\"\n")
+	fmt.Printf("   Trailing 8%% after 18%% profit: --sell-strategy trailing_5 --sell-strategy-params \"trailing_percent=0.08,min_profit=0.18\"\n")
+	fmt.Printf("   Custom aggressive 35%%: --sell-strategy aggressive --sell-strategy-params \"take_profit=0.35\"\n")
+	fmt.Println()
 }
 
 // RegisterAllTradingCommands 注册所有交易相关命令
