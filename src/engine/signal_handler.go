@@ -132,16 +132,40 @@ func (h *SellSignalHandler) HandleSignal(ctx context.Context, signal *strategy.S
 		"reason", signal.Reason,
 		"strength", signal.Strength)
 
-	// 卖出全部持仓
+	// 检查持仓
 	if portfolio.Position.IsZero() {
 		logger.Info("无持仓，跳过卖出")
 		return nil
 	}
 
+	// 🔥 新功能：根据信号强度计算卖出数量
+	var sellQuantity decimal.Decimal
+
+	// 如果信号强度为0或超过1，默认全仓卖出
+	if signal.Strength <= 0 || signal.Strength > 1 {
+		sellQuantity = portfolio.Position
+		logger.Info("信号强度无效，执行全仓卖出", "strength", signal.Strength)
+	} else {
+		// 按信号强度计算部分卖出数量
+		sellQuantity = portfolio.Position.Mul(decimal.NewFromFloat(signal.Strength))
+
+		// 确保不超过持仓数量
+		if sellQuantity.GreaterThan(portfolio.Position) {
+			sellQuantity = portfolio.Position
+		}
+
+		// 记录分批交易信息
+		sellPercent := decimal.NewFromFloat(signal.Strength).Mul(decimal.NewFromInt(100))
+		logger.Info("执行分批卖出",
+			"sell_quantity", sellQuantity.String(),
+			"total_position", portfolio.Position.String(),
+			"sell_percent", sellPercent.String()+"%")
+	}
+
 	sellOrder := &executor.SellOrder{
 		TradingPair: h.tradingPair,
 		Type:        executor.OrderTypeMarket,
-		Quantity:    portfolio.Position,
+		Quantity:    sellQuantity, // 🎯 使用计算后的数量，而不是全部持仓
 		Price:       kline.Close,
 		Timestamp:   time.Unix(signal.Timestamp/1000, 0),
 		Reason:      signal.Reason,

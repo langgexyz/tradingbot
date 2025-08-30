@@ -84,22 +84,10 @@ func (s *BollingerBandsStrategy) SetParams(params strategy.StrategyParams) error
 		// 设置卖出策略
 		s.SellStrategyName = bollingerParams.SellStrategyName
 
-		// 创建卖出策略实例，支持用户参数
-		if bollingerParams.SellStrategyParams != nil && len(bollingerParams.SellStrategyParams) > 0 {
-			// 使用用户参数创建策略
-			sellStrategy, err := strategy.CreateSellStrategyWithParams(s.SellStrategyName, bollingerParams.SellStrategyParams)
-			if err == nil {
-				s.sellStrategy = sellStrategy
-			}
-		} else {
-			// 使用默认配置创建策略
-			sellConfigs := strategy.GetDefaultSellStrategyConfigs()
-			if sellConfig, exists := sellConfigs[s.SellStrategyName]; exists {
-				sellStrategy, err := strategy.CreateSellStrategy(sellConfig)
-				if err == nil {
-					s.sellStrategy = sellStrategy
-				}
-			}
+		// 创建卖出策略实例，统一使用 CreateSellStrategyWithParams（支持预设名称和直接类型）
+		sellStrategy, err := strategy.CreateSellStrategyWithParams(s.SellStrategyName, bollingerParams.SellStrategyParams)
+		if err == nil {
+			s.sellStrategy = sellStrategy
 		}
 	} else {
 		return fmt.Errorf("invalid parameter type, expected *strategy.BollingerBandsParams")

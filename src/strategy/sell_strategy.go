@@ -165,26 +165,86 @@ func ParseSellStrategyParams(paramsStr string) (map[string]float64, error) {
 
 // CreateSellStrategyWithParams 使用用户参数创建卖出策略
 func CreateSellStrategyWithParams(strategyName string, userParams map[string]float64) (SellStrategy, error) {
-	// 获取默认配置
+	// 首先尝试预设配置
 	defaultConfigs := GetDefaultSellStrategyConfigs()
-	config, exists := defaultConfigs[strategyName]
-	if !exists {
+	if config, exists := defaultConfigs[strategyName]; exists {
+		// 复制配置以避免修改默认值
+		configCopy := *config
+
+		// 根据用户参数覆盖默认值
+		if takeProfit, ok := userParams["take_profit"]; ok {
+			configCopy.FixedTakeProfit = takeProfit
+		}
+		if trailingPercent, ok := userParams["trailing_percent"]; ok {
+			configCopy.TrailingPercent = trailingPercent
+		}
+		if minProfit, ok := userParams["min_profit"]; ok {
+			configCopy.MinProfitForTrailing = minProfit
+		}
+
+		return CreateSellStrategy(&configCopy)
+	}
+
+	// 如果不是预设配置，尝试直接策略类型
+	config := &SellStrategyConfig{}
+
+	switch strategyName {
+	case "fixed":
+		config.Type = SellStrategyFixed
+		config.FixedTakeProfit = 0.20 // 默认20%
+
+		// 应用用户参数
+		if takeProfit, ok := userParams["take_profit"]; ok {
+			config.FixedTakeProfit = takeProfit
+		}
+
+	case "trailing":
+		config.Type = SellStrategyTrailing
+		config.TrailingPercent = 0.05      // 默认5%回撤
+		config.MinProfitForTrailing = 0.15 // 默认15%后启用
+
+		// 应用用户参数
+		if trailingPercent, ok := userParams["trailing_percent"]; ok {
+			config.TrailingPercent = trailingPercent
+		}
+		if minProfit, ok := userParams["min_profit"]; ok {
+			config.MinProfitForTrailing = minProfit
+		}
+
+	case "combo":
+		config.Type = SellStrategyCombo
+		config.FixedTakeProfit = 0.25      // 默认25%兜底
+		config.TrailingPercent = 0.08      // 默认8%回撤
+		config.MinProfitForTrailing = 0.18 // 默认18%后启用
+		config.MaxHoldingDays = 180        // 默认180天
+
+		// 应用用户参数
+		if takeProfit, ok := userParams["take_profit"]; ok {
+			config.FixedTakeProfit = takeProfit
+		}
+		if trailingPercent, ok := userParams["trailing_percent"]; ok {
+			config.TrailingPercent = trailingPercent
+		}
+		if minProfit, ok := userParams["min_profit"]; ok {
+			config.MinProfitForTrailing = minProfit
+		}
+		if maxDays, ok := userParams["max_holding_days"]; ok {
+			config.MaxHoldingDays = int(maxDays)
+		}
+
+	case "partial":
+		config.Type = SellStrategyPartial
+		// 使用默认分批配置
+		config.PartialLevels = []PartialLevel{
+			{ProfitPercent: 0.20, SellPercent: 0.30}, // 20%盈利卖30%
+			{ProfitPercent: 0.40, SellPercent: 0.40}, // 40%盈利再卖40%
+			{ProfitPercent: 0.60, SellPercent: 1.00}, // 60%盈利全卖
+		}
+		// 注意：partial策略的参数比较复杂，暂时使用默认配置
+
+	default:
 		return nil, fmt.Errorf("unknown sell strategy: %s", strategyName)
 	}
 
-	// 复制配置以避免修改默认值
-	configCopy := *config
-
-	// 根据用户参数覆盖默认值
-	if takeProfit, ok := userParams["take_profit"]; ok {
-		configCopy.FixedTakeProfit = takeProfit
-	}
-	if trailingPercent, ok := userParams["trailing_percent"]; ok {
-		configCopy.TrailingPercent = trailingPercent
-	}
-	if minProfit, ok := userParams["min_profit"]; ok {
-		configCopy.MinProfitForTrailing = minProfit
-	}
-
-	return CreateSellStrategy(&configCopy)
+	return CreateSellStrategy(config)
 }
