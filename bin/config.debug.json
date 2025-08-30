@@ -1,0 +1,59 @@
+{
+  "debug": true,
+  "log_level": "debug",
+  "binance": {
+    "api_key": "your_test_api_key_here",
+    "secret_key": "your_test_secret_key_here",
+    "base_url": "https://testnet.binance.vision",
+    "timeout": 30,
+    "security": {
+      "key_type": "HMAC",
+      "recv_window": 10000,
+      "enable_time_sync": true,
+      "permissions": {
+        "enable_trading": true,
+        "enable_user_data": true,
+        "enable_user_stream": true,
+        "read_only": false
+      }
+    },
+    "rate_limit": {
+      "requests_per_second": 10,
+      "max_retries": 5,
+      "retry_delay": 1,
+      "enable_retry_after": true
+    }
+  },
+  "trading": {
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "initial_capital": 1000.0,
+    "mode": "paper",
+    "max_positions": 1,
+    "position_size_percent": 0.1,
+    "min_trade_amount": 10.0,
+    "kline_config": {
+      "default_limit": 100,
+      "time_zone": "0",
+      "enable_historical": true
+    }
+  },
+  "strategy": {
+    "name": "bollinger_bands",
+    "parameters": {
+      "period": 20,
+      "multiplier": 2.0,
+      "position_size_percent": 0.1,
+      "min_trade_amount": 10.0,
+      "stop_loss_percent": 0.02,
+      "take_profit_percent": 0.04
+    }
+  },
+  "backtest": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-03-31",
+    "fee": 0.001,
+    "slippage": 0.0001,
+    "data_source": "binance"
+  }
+}

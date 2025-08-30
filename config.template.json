@@ -1,0 +1,75 @@
+{
+  "_description": "交易策略配置文件模板 - 复制此文件为config.json并修改相应参数",
+  "_strategy_description": "布林道策略：价格跌破下轨时买入，价格突破上轨时卖出",
+  
+  "binance": {
+    "_comment": "币安API配置 - 从 https://www.binance.com/cn/my/settings/api-management 申请",
+    "api_key": "YOUR_API_KEY_HERE",
+    "secret_key": "YOUR_SECRET_KEY_HERE",
+    "testnet": true
+  },
+  
+  "trading": {
+    "_comment": "交易基础配置",
+    "symbol": "BTCUSDT",
+    "timeframe": "4h",
+    "initial_capital": 10000,
+    "mode": "backtest",
+    "max_positions": 1,
+    "position_size_percent": 0.95,
+    "min_trade_amount": 10,
+    "_timeframe_options": "1m,5m,15m,1h,4h,1d",
+    "_mode_options": "backtest,live"
+  },
+  
+  "strategy": {
+    "_comment": "布林道策略参数",
+    "name": "bollinger_bands",
+    "parameters": {
+      "period": 20,
+      "multiplier": 2.0,
+      "position_size_percent": 0.95,
+      "min_trade_amount": 10,
+      "stop_loss_percent": 0.05,
+      "take_profit_percent": 0.10,
+      "cooldown_bars": 3,
+      "_period_note": "布林道计算周期，常用20",
+      "_multiplier_note": "标准差倍数，2.0覆盖95%价格范围"
+    }
+  },
+  
+  "risk": {
+    "_comment": "风险管理配置",
+    "max_daily_loss": 0.05,
+    "max_total_loss": 0.20,
+    "stop_loss_percent": 0.05,
+    "take_profit_percent": 0.10,
+    "max_drawdown_percent": 0.15,
+    "cooldown_minutes": 60
+  },
+  
+  "backtest": {
+    "_comment": "回测配置",
+    "start_date": "2023-01-01",
+    "end_date": "2023-12-31",
+    "commission": 0.001,
+    "slippage": 0.0001,
+    "data_source": "binance",
+    "save_results": true,
+    "results_path": "./backtest_results",
+    "_commission_note": "手续费率 0.001 = 0.1%",
+    "_slippage_note": "滑点 0.0001 = 0.01%"
+  },
+  
+  "logging": {
+    "_comment": "日志配置",
+    "level": "info",
+    "output": "both",
+    "file_path": "./logs/trading.log",
+    "max_size": 100,
+    "max_backups": 5,
+    "max_age": 30,
+    "_level_options": "debug,info,warn,error",
+    "_output_options": "console,file,both"
+  }
+}

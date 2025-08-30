@@ -1,0 +1,12 @@
+.idea/
+bin/*
+!bin/config.debug.json
+!bin/config.json.default
+!bin/go-build-stream-gateway-go-server-linux
+!bin/start.sh
+
+# Chrome Extension
+chrome-extension/node_modules/
+chrome-extension/dist/
+chrome-extension/packages/chrome-extension-sdk/node_modules/
+chrome-extension/packages/chrome-extension-sdk/dist/

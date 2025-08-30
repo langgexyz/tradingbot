@@ -1,0 +1,105 @@
+{
+	"github.com/xpwu/go-log/log:config": {
+		"// level": "0:DEBUG; 1:INFO; 2:WARNING; 3:ERROR; 4:FATAL",
+		"level": 0
+	},
+	"go-build-stream-gateway-go-server-main/src/config:Config": {
+		"// binance": "币安API配置",
+		"binance": {
+			"// api_key": "API密钥 - 从币安官网申请获得",
+			"api_key": "",
+			"// secret_key": "API私钥 - 配对的私钥，请妥善保管",
+			"secret_key": "",
+			"// base_url": "API地址 - 默认api.binance.com，可选api-gcp.binance.com或api1-4.binance.com",
+			"base_url": "https://api.binance.com",
+			"// timeout": "请求超时时间(秒) - 默认10秒，币安官方建议值",
+			"timeout": 10,
+			"// security": "API安全配置",
+			"security": {
+				"// key_type": "密钥类型 - HMAC或Ed25519，推荐Ed25519",
+				"key_type": "HMAC",
+				"// recv_window": "请求时间窗口(毫秒) - 默认5000ms，最大60000ms",
+				"recv_window": 5000,
+				"// enable_time_sync": "启用时间同步 - 自动同步服务器时间",
+				"enable_time_sync": true,
+				"// permissions": "API权限配置",
+				"permissions": {
+					"// enable_trading": "启用交易权限 - TRADE类型接口，需在币安后台开启",
+					"enable_trading": false,
+					"// enable_user_data": "启用用户数据权限 - USER_DATA类型接口",
+					"enable_user_data": true,
+					"// enable_user_stream": "启用用户数据流权限 - USER_STREAM类型接口",
+					"enable_user_stream": false,
+					"// read_only": "只读模式 - 仅允许查询，禁止交易操作",
+					"read_only": true
+				}
+			},
+			"// rate_limit": "API访问限制配置",
+			"rate_limit": {
+				"// requests_per_second": "每秒最大请求数 - 建议5-10，避免429错误",
+				"requests_per_second": 5,
+				"// max_retries": "最大重试次数 - 收到429/418时的重试次数",
+				"max_retries": 3,
+				"// retry_delay": "重试延迟(秒) - 收到限制错误后的等待时间",
+				"retry_delay": 2,
+				"// enable_retry_after": "启用Retry-After头 - 自动解析服务器返回的等待时间",
+				"enable_retry_after": true
+			}
+		},
+		"// trading": "交易基础配置",
+		"trading": {
+			"// symbol": "交易对 - 如BTCUSDT、ETHUSDT等",
+			"symbol": "WIFUSDT",
+			"// timeframe": "K线周期 - 支持1s,1m,3m,5m,15m,30m,1h,2h,4h,6h,8h,12h,1d,3d,1w,1M",
+			"timeframe": "4h",
+			"// initial_capital": "初始资金 - 回测或交易的起始金额(USDT)",
+			"initial_capital": 10000,
+			"// mode": "运行模式 - backtest=回测,paper=模拟,live=实盘",
+			"mode": "backtest",
+			"// max_positions": "最大持仓数 - 同时持有的不同币种数量，通常设为1",
+			"max_positions": 1,
+			"// position_size_percent": "仓位比例 - 每次交易使用的资金比例，0.95=95%",
+			"position_size_percent": 0.95,
+			"// min_trade_amount": "最小交易额 - 低于此金额不交易，避免手续费占比过高",
+			"min_trade_amount": 10,
+			"// kline_config": "K线数据配置",
+			"kline_config": {
+				"// default_limit": "默认K线数据条数 - 默认500，最大1000",
+				"default_limit": 500,
+				"// time_zone": "时区设置 - 默认UTC，支持-12:00到+14:00",
+				"time_zone": "0",
+				"// enable_historical": "启用历史数据 - 是否获取指定时间范围的历史数据",
+				"enable_historical": true
+			}
+		},
+		"// strategy": "策略配置",
+		"strategy": {
+			"// name": "策略名称 - 目前支持bollinger_bands",
+			"name": "bollinger_bands",
+			"// parameters": "布林道策略参数",
+			"parameters": {
+				"// period": "计算周期 - 默认20",
+				"period": 20,
+				"// multiplier": "标准差倍数 - 默认2.0",
+				"multiplier": 2,
+				"// position_size_percent": "仓位比例 - 默认0.95",
+				"position_size_percent": 0.95,
+				"// min_trade_amount": "最小交易额 - 默认10",
+				"min_trade_amount": 10
+			}
+		},
+		"// backtest": "回测配置",
+		"backtest": {
+			"// start_date": "回测开始日期 - 格式2023-01-01，建议至少6个月数据",
+			"start_date": "2024-08-13",
+			"// end_date": "回测结束日期 - 格式2023-12-31，不能超过当前时间",
+			"end_date": "2024-08-30",
+			"// fee": "交易手续费率 - 0.001=0.1%，币安现货手续费",
+			"fee": 0.001,
+			"// slippage": "滑点损失 - 0.0001=0.01%，模拟实际交易的价格偏差",
+			"slippage": 0.0001,
+			"// data_source": "数据来源 - 目前仅支持binance",
+			"data_source": "binance"
+		}
+	}
+}
