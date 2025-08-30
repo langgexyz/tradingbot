@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -223,9 +224,40 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 	// 进行详细交易分析
 	trades, openPositions, avgHoldingTime, maxHoldingTime, minHoldingTime, avgWinningPnL, avgLosingPnL, maxWin, maxLoss, profitFactor := AnalyzeTrades(orders)
 
-	// 计算最大回撤
+	// 计算最大回撤 - 使用真实K线数据
 	capitalForDrawdown := stats["initial_capital"].(decimal.Decimal)
-	drawdownInfo := CalculateDrawdown(orders, capitalForDrawdown)
+	klines := ts.tradingEngine.GetKlines() // 获取回测过程中的K线数据
+	drawdownInfo := CalculateDrawdownWithKlines(orders, klines, capitalForDrawdown)
+
+	// 计算年化收益率 (APR)
+	backtestDays := int(endTime.Sub(startTime).Hours() / 24)
+	if backtestDays == 0 {
+		backtestDays = 1 // 避免除零
+	}
+
+	var annualReturn decimal.Decimal
+	if backtestDays > 0 {
+		// APR = ((Final / Initial)^(365/Days) - 1) * 100
+		initialCap := stats["initial_capital"].(decimal.Decimal)
+		finalPort := stats["final_portfolio"].(decimal.Decimal)
+
+		if initialCap.IsPositive() {
+			totalReturn := finalPort.Div(initialCap) // Final/Initial
+			daysInYear := decimal.NewFromFloat(365.0)
+			backtestDaysDecimal := decimal.NewFromInt(int64(backtestDays))
+			yearFraction := daysInYear.Div(backtestDaysDecimal) // 365/Days
+
+			// 计算 totalReturn^yearFraction
+			// 由于decimal包不支持指数运算，使用浮点数计算然后转回decimal
+			totalReturnFloat := totalReturn.InexactFloat64()
+			yearFractionFloat := yearFraction.InexactFloat64()
+
+			if totalReturnFloat > 0 {
+				annualizedMultiplier := math.Pow(totalReturnFloat, yearFractionFloat)
+				annualReturn = decimal.NewFromFloat((annualizedMultiplier - 1.0) * 100.0)
+			}
+		}
+	}
 
 	return &BacktestStatistics{
 		InitialCapital:  stats["initial_capital"].(decimal.Decimal),
@@ -255,6 +287,10 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 		DrawdownDuration:   drawdownInfo.DrawdownDuration,
 		CurrentDrawdown:    drawdownInfo.CurrentDrawdown,
 		PeakPortfolioValue: drawdownInfo.PeakValue,
+
+		// 年化收益率统计
+		AnnualReturn: annualReturn,
+		BacktestDays: backtestDays,
 	}, nil
 }
 
@@ -380,6 +416,10 @@ type BacktestStatistics struct {
 	DrawdownDuration   time.Duration   `json:"drawdown_duration"`    // 最大回撤持续时间
 	CurrentDrawdown    decimal.Decimal `json:"current_drawdown"`     // 当前回撤
 	PeakPortfolioValue decimal.Decimal `json:"peak_portfolio_value"` // 历史最高组合价值
+
+	// 年化收益率统计
+	AnnualReturn decimal.Decimal `json:"annual_return"` // 年化收益率 (APR)
+	BacktestDays int             `json:"backtest_days"` // 回测天数
 }
 
 // PrintBacktestResults 打印回测结果
@@ -396,6 +436,8 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 	fmt.Println("------------------------------")
 	totalReturnPercent := stats.TotalReturn.Mul(decimal.NewFromInt(100))
 	fmt.Printf("Total Return: %.2f%%\n", totalReturnPercent.InexactFloat64())
+	fmt.Printf("Annual Return (APR): %.2f%%\n", stats.AnnualReturn.InexactFloat64())
+	fmt.Printf("Backtest Period: %d days\n", stats.BacktestDays)
 
 	winRate := decimal.Zero
 	if stats.TotalTrades > 0 {
@@ -801,58 +843,69 @@ type DrawdownInfo struct {
 	PeakValue          decimal.Decimal // 历史最高价值
 }
 
-// CalculateDrawdown 计算最大回撤
-func CalculateDrawdown(orders []executor.OrderResult, initialCapital decimal.Decimal) DrawdownInfo {
-	if len(orders) == 0 {
+// CalculateDrawdownWithKlines 计算最大回撤（使用K线数据获取实时价格）
+func CalculateDrawdownWithKlines(orders []executor.OrderResult, klines []*cex.KlineData, initialCapital decimal.Decimal) DrawdownInfo {
+	if len(orders) == 0 || len(klines) == 0 {
 		return DrawdownInfo{
 			PeakValue: initialCapital,
 		}
 	}
 
-	var drawdownInfo DrawdownInfo
+	// 按时间排序订单
+	ordersCopy := make([]executor.OrderResult, len(orders))
+	copy(ordersCopy, orders)
+	for i := 0; i < len(ordersCopy)-1; i++ {
+		for j := i + 1; j < len(ordersCopy); j++ {
+			if ordersCopy[i].Timestamp.After(ordersCopy[j].Timestamp) {
+				ordersCopy[i], ordersCopy[j] = ordersCopy[j], ordersCopy[i]
+			}
+		}
+	}
+
 	currentCash := initialCapital
 	peakValue := initialCapital
 	maxDrawdown := decimal.Zero
 	maxDrawdownPercent := decimal.Zero
 
-	// 回撤开始和结束时间（用于计算持续时间）
-	var drawdownStartTime, maxDrawdownStartTime time.Time
-	var maxDrawdownDuration time.Duration
-	inDrawdown := false
+	// 跟踪当前持仓
+	var currentPositions []executor.OrderResult // 所有未平仓的买入订单
+	orderIndex := 0
 
-	// 跟踪买卖订单配对以计算实际盈亏
-	var pendingBuys []executor.OrderResult
+	// 🔥 关键修复：遍历每个K线时间点，而不是只在订单时间点
+	for _, kline := range klines {
+		// 处理当前K线时间之前的所有订单
+		for orderIndex < len(ordersCopy) && !ordersCopy[orderIndex].Timestamp.After(kline.CloseTime) {
+			order := ordersCopy[orderIndex]
 
-	// 按时间顺序处理每个订单，计算组合价值变化
-	for _, order := range orders {
-		if order.Side == executor.OrderSideBuy {
-			// 买入：现金减少，记录买入订单
-			currentCash = currentCash.Sub(order.Price.Mul(order.Quantity)).Sub(order.Commission)
-			pendingBuys = append(pendingBuys, order)
-		} else if order.Side == executor.OrderSideSell && len(pendingBuys) > 0 {
-			// 卖出：现金增加，移除对应的买入订单
-			pendingBuys = pendingBuys[1:]
+			if order.Side == executor.OrderSideBuy {
+				// 买入：现金减少，记录持仓
+				currentCash = currentCash.Sub(order.Price.Mul(order.Quantity)).Sub(order.Commission)
+				currentPositions = append(currentPositions, order)
+			} else if order.Side == executor.OrderSideSell && len(currentPositions) > 0 {
+				// 卖出：现金增加，移除第一个持仓（FIFO）
+				sellValue := order.Price.Mul(order.Quantity)
+				currentCash = currentCash.Add(sellValue).Sub(order.Commission)
 
-			// 卖出获得的现金
-			sellValue := order.Price.Mul(order.Quantity)
-			currentCash = currentCash.Add(sellValue).Sub(order.Commission)
+				// 移除对应的买入订单（简化处理：FIFO）
+				if len(currentPositions) > 0 {
+					currentPositions = currentPositions[1:]
+				}
+			}
+			orderIndex++
 		}
 
-		// 当前组合价值 = 现金 + 持仓价值（按当前价格计算）
+		// 🔥 使用当前K线的收盘价估值所有持仓
 		currentValue := currentCash
-		for _, buyOrder := range pendingBuys {
-			// 持仓按当前价格估值（这里简化使用卖出价格）
-			positionValue := buyOrder.Quantity.Mul(order.Price)
+		marketPrice := kline.Close
+
+		for _, position := range currentPositions {
+			positionValue := position.Quantity.Mul(marketPrice)
 			currentValue = currentValue.Add(positionValue)
 		}
 
 		// 更新峰值
 		if currentValue.GreaterThan(peakValue) {
 			peakValue = currentValue
-			// 如果创新高，结束回撤期
-			if inDrawdown {
-				inDrawdown = false
-			}
 		}
 
 		// 计算当前回撤
@@ -866,38 +919,26 @@ func CalculateDrawdown(orders []executor.OrderResult, initialCapital decimal.Dec
 		if currentDrawdown.GreaterThan(maxDrawdown) {
 			maxDrawdown = currentDrawdown
 			maxDrawdownPercent = currentDrawdownPercent
-			maxDrawdownStartTime = drawdownStartTime
-		}
-
-		// 检查是否进入回撤期
-		if currentDrawdown.IsPositive() && !inDrawdown {
-			inDrawdown = true
-			drawdownStartTime = order.Timestamp
-		}
-
-		// 计算最大回撤持续时间
-		if inDrawdown && drawdownStartTime.Equal(maxDrawdownStartTime) {
-			maxDrawdownDuration = order.Timestamp.Sub(maxDrawdownStartTime)
 		}
 	}
 
-	// 计算最终的当前回撤
+	// 计算最终状态
 	finalCash := currentCash
-	finalValue := finalCash
-	for _, buyOrder := range pendingBuys {
-		// 对于未平仓的持仓，使用最后的价格估值
-		if len(orders) > 0 {
-			lastPrice := orders[len(orders)-1].Price
-			positionValue := buyOrder.Quantity.Mul(lastPrice)
-			finalValue = finalValue.Add(positionValue)
+	for _, position := range currentPositions {
+		// 使用最后一个K线价格估值剩余持仓
+		if len(klines) > 0 {
+			lastPrice := klines[len(klines)-1].Close
+			finalCash = finalCash.Add(position.Quantity.Mul(lastPrice))
 		}
 	}
 
-	drawdownInfo.MaxDrawdown = maxDrawdown
-	drawdownInfo.MaxDrawdownPercent = maxDrawdownPercent
-	drawdownInfo.DrawdownDuration = maxDrawdownDuration
-	drawdownInfo.CurrentDrawdown = peakValue.Sub(finalValue)
-	drawdownInfo.PeakValue = peakValue
+	currentDrawdown := peakValue.Sub(finalCash)
 
-	return drawdownInfo
+	return DrawdownInfo{
+		MaxDrawdown:        maxDrawdown,
+		MaxDrawdownPercent: maxDrawdownPercent,
+		DrawdownDuration:   time.Duration(0), // 简化，暂不计算持续时间
+		CurrentDrawdown:    currentDrawdown,
+		PeakValue:          peakValue,
+	}
 }

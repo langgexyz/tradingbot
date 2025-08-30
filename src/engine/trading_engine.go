@@ -33,6 +33,9 @@ type TradingEngine struct {
 	// 运行状态
 	isRunning bool
 	stopChan  chan struct{}
+
+	// K线数据存储（用于回撤计算等）
+	lastKlines []*cex.KlineData
 }
 
 // NewTradingEngine 创建交易引擎
@@ -112,6 +115,9 @@ func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time
 	})
 
 	logger.Info(fmt.Sprintf("加载历史数据完成: klines=%d", len(klines)))
+
+	// 保存K线数据供后续使用（如回撤计算）
+	e.lastKlines = klines
 
 	// 逐个处理K线数据
 	for i, kline := range klines {
@@ -196,6 +202,11 @@ func (e *TradingEngine) Stop() {
 	if e.isRunning {
 		close(e.stopChan)
 	}
+}
+
+// GetKlines 获取最近处理的K线数据（用于回撤计算等）
+func (e *TradingEngine) GetKlines() []*cex.KlineData {
+	return e.lastKlines
 }
 
 // processLiveTick 处理实时数据
