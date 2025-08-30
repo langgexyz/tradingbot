@@ -56,11 +56,11 @@ func runKlineTest(symbol, interval string, limit int, verbose bool) error {
 	fmt.Printf("🔸 交易对: %s\n", symbol)
 	fmt.Printf("🔸 时间周期: %s\n", interval)
 	fmt.Printf("🔸 数据条数: %d\n", limit)
-	fmt.Printf("🔸 数据源: %s\n", config.AppConfig.Binance.BaseURL)
+	fmt.Printf("🔸 数据源: %s\n", config.AppConfig.CEX.Binance.BaseURL)
 	fmt.Println()
 
 	// 创建币安客户端（K线数据获取无需API密钥）
-	client := binance.NewClient("", "", config.AppConfig.Binance.BaseURL)
+	client := binance.NewClient("", "", config.AppConfig.CEX.Binance.BaseURL)
 
 	// 创建上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

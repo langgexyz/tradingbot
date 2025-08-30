@@ -4,6 +4,7 @@ go 1.24.5
 
 require (
 	github.com/adshao/go-binance/v2 v2.4.5
+	github.com/lib/pq v1.10.9
 	github.com/shopspring/decimal v1.3.1
 	github.com/xpwu/go-cmd v0.2.0
 	github.com/xpwu/go-config v0.1.0

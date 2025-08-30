@@ -42,13 +42,13 @@ func runPingTest(verbose bool, timeoutSeconds int) error {
 	if verbose {
 		fmt.Println("🌐 币安API连通性测试")
 		fmt.Println("================================")
-		fmt.Printf("📡 目标服务器: %s\n", config.AppConfig.Binance.BaseURL)
+		fmt.Printf("📡 目标服务器: %s\n", config.AppConfig.CEX.Binance.BaseURL)
 		fmt.Printf("⏰ 超时时间: %d秒\n", timeoutSeconds)
 		fmt.Println()
 	}
 
 	// 创建币安客户端（不需要API密钥进行ping测试）
-	client := binance.NewClient("", "", config.AppConfig.Binance.BaseURL)
+	client := binance.NewClient("", "", config.AppConfig.CEX.Binance.BaseURL)
 
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)

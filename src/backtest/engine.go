@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go-build-stream-gateway-go-server-main/src/binance"
+	"go-build-stream-gateway-go-server-main/src/database"
 	"go-build-stream-gateway-go-server-main/src/timeframes"
 
 	"github.com/shopspring/decimal"
@@ -146,12 +147,32 @@ func NewEngine(symbol string, tf timeframes.Timeframe, startTime, endTime time.T
 	}
 }
 
-// LoadData 加载历史数据
-func (e *Engine) LoadData(ctx context.Context, client *binance.Client) error {
-	// 简化：直接获取最近100条K线数据用于回测
-	fmt.Printf("📊 Loading recent 100 klines for %s (%s)...\n", e.symbol, e.timeframe)
+// LoadData 加载历史数据（优先数据库，缺失时从网络补充）
+func (e *Engine) LoadData(ctx context.Context, client *binance.Client, klineManager interface{}) error {
+	fmt.Printf("📊 Loading historical data for %s (%s)...\n", e.symbol, e.timeframe)
 
-	data, err := client.GetKlines(ctx, e.symbol, e.timeframe.GetBinanceInterval(), 100)
+	var data []*binance.KlineData
+	var err error
+
+	// 检查是否有KlineManager（数据库支持）
+	if km, ok := klineManager.(*database.KlineManager); ok && km != nil {
+		fmt.Printf("🗄️ Using database with network fallback...\n")
+
+		// 如果有指定时间范围，使用范围查询
+		if !e.startTime.IsZero() && !e.endTime.IsZero() {
+			startTimeMs := e.startTime.Unix() * 1000
+			endTimeMs := e.endTime.Unix() * 1000
+			data, err = km.GetKlinesInRange(ctx, e.symbol, e.timeframe.GetBinanceInterval(), startTimeMs, endTimeMs)
+		} else {
+			// 否则获取最近100条数据
+			data, err = km.GetKlines(ctx, e.symbol, e.timeframe.GetBinanceInterval(), 100)
+		}
+	} else {
+		fmt.Printf("🌐 Using network only...\n")
+		// 直接从网络获取
+		data, err = client.GetKlines(ctx, e.symbol, e.timeframe.GetBinanceInterval(), 100)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to load kline data: %w", err)
 	}

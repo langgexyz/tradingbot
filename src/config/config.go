@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"go-build-stream-gateway-go-server-main/src/database"
 	"go-build-stream-gateway-go-server-main/src/timeframes"
 
 	"github.com/shopspring/decimal"
@@ -12,49 +13,77 @@ import (
 
 // Config 主配置结构
 type Config struct {
-	Binance  BinanceConfig  `conf:"binance,币安API配置"`
+	CEX      CEXConfig      `conf:"cex,中心化交易所配置"`
 	Trading  TradingConfig  `conf:"trading,交易基础配置"`
 	Strategy StrategyConfig `conf:"strategy,策略配置"`
 	Backtest BacktestConfig `conf:"backtest,回测配置"`
+	Symbols  []SymbolInfo   `conf:"symbols,支持的交易对列表"`
+}
+
+// SymbolInfo 交易对信息（简化版）
+type SymbolInfo struct {
+	Symbol     string `conf:"symbol,交易对代码"`
+	BaseAsset  string `conf:"base_asset,基础资产"`
+	QuoteAsset string `conf:"quote_asset,计价资产"`
+}
+
+// CEXConfig 中心化交易所配置
+type CEXConfig struct {
+	Binance BinanceConfig `conf:"binance,币安配置"`
 }
 
 // BinanceConfig 币安API配置
 type BinanceConfig struct {
-	APIKey    string          `conf:"api_key,API密钥 - 从币安官网申请获得"`
-	SecretKey string          `conf:"secret_key,API私钥 - 配对的私钥，请妥善保管"`
-	BaseURL   string          `conf:"base_url,API地址 - 默认api.binance.com，可选api-gcp.binance.com或api1-4.binance.com"`
-	Timeout   int             `conf:"timeout,请求超时时间(秒) - 默认10秒，币安官方建议值"`
-	Security  SecurityConfig  `conf:"security,API安全配置"`
-	RateLimit RateLimitConfig `conf:"rate_limit,API访问限制配置"`
+	APIKey        string                  `conf:"api_key,API密钥"`
+	SecretKey     string                  `conf:"secret_key,API私钥"`
+	BaseURL       string                  `conf:"base_url,API地址"`
+	Timeout       int                     `conf:"timeout,请求超时时间(秒)"`
+	EnableTrading bool                    `conf:"enable_trading,启用交易权限"`
+	ReadOnly      bool                    `conf:"read_only,只读模式"`
+	Database      database.DatabaseConfig `conf:"database,数据库配置"`
 }
 
-// SecurityConfig API安全配置
-type SecurityConfig struct {
-	KeyType        string            `conf:"key_type,密钥类型 - HMAC或Ed25519，推荐Ed25519"`
-	RecvWindow     int               `conf:"recv_window,请求时间窗口(毫秒) - 默认5000ms，最大60000ms"`
-	EnableTimeSync bool              `conf:"enable_time_sync,启用时间同步 - 自动同步服务器时间"`
-	Permissions    PermissionsConfig `conf:"permissions,API权限配置"`
+// OKXConfig OKX API配置
+type OKXConfig struct {
+	APIKey        string                  `conf:"api_key,API密钥"`
+	SecretKey     string                  `conf:"secret_key,API私钥"`
+	Passphrase    string                  `conf:"passphrase,API密码"`
+	BaseURL       string                  `conf:"base_url,API地址"`
+	Timeout       int                     `conf:"timeout,请求超时时间(秒)"`
+	EnableTrading bool                    `conf:"enable_trading,启用交易权限"`
+	ReadOnly      bool                    `conf:"read_only,只读模式"`
+	Database      database.DatabaseConfig `conf:"database,数据库配置"`
 }
 
-// PermissionsConfig API权限配置
-type PermissionsConfig struct {
-	EnableTrading    bool `conf:"enable_trading,启用交易权限 - TRADE类型接口，需在币安后台开启"`
-	EnableUserData   bool `conf:"enable_user_data,启用用户数据权限 - USER_DATA类型接口"`
-	EnableUserStream bool `conf:"enable_user_stream,启用用户数据流权限 - USER_STREAM类型接口"`
-	ReadOnly         bool `conf:"read_only,只读模式 - 仅允许查询，禁止交易操作"`
+// HuobiConfig 火币API配置
+type HuobiConfig struct {
+	APIKey        string                  `conf:"api_key,API密钥"`
+	SecretKey     string                  `conf:"secret_key,API私钥"`
+	BaseURL       string                  `conf:"base_url,API地址"`
+	Timeout       int                     `conf:"timeout,请求超时时间(秒)"`
+	EnableTrading bool                    `conf:"enable_trading,启用交易权限"`
+	ReadOnly      bool                    `conf:"read_only,只读模式"`
+	Database      database.DatabaseConfig `conf:"database,数据库配置"`
 }
 
-// RateLimitConfig API访问限制配置
-type RateLimitConfig struct {
-	RequestsPerSecond int  `conf:"requests_per_second,每秒最大请求数 - 建议5-10，避免429错误"`
-	MaxRetries        int  `conf:"max_retries,最大重试次数 - 收到429/418时的重试次数"`
-	RetryDelay        int  `conf:"retry_delay,重试延迟(秒) - 收到限制错误后的等待时间"`
-	EnableRetryAfter  bool `conf:"enable_retry_after,启用Retry-After头 - 自动解析服务器返回的等待时间"`
+// GetCEXConfig 根据CEX名称获取对应的配置
+func (c *Config) GetCEXConfig(cex string) (interface{}, *database.DatabaseConfig, error) {
+	switch cex {
+	case "binance":
+		return &c.CEX.Binance, &c.CEX.Binance.Database, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported CEX: %s, only binance is supported", cex)
+	}
+}
+
+// GetSupportedCEXs 获取支持的CEX列表
+func (c *Config) GetSupportedCEXs() []string {
+	return []string{"binance"}
 }
 
 // TradingConfig 交易配置
 type TradingConfig struct {
-	Symbol              string          `conf:"symbol,交易对 - 如BTCUSDT、ETHUSDT等"`
+	Symbol              string          `conf:"symbol,交易对 - 通过命令行参数-s指定，如BTCUSDT、ETHUSDT等"`
 	Timeframe           string          `conf:"timeframe,K线周期 - 支持1s,1m,3m,5m,15m,30m,1h,2h,4h,6h,8h,12h,1d,3d,1w,1M"`
 	InitialCapital      float64         `conf:"initial_capital,初始资金 - 回测或交易的起始金额(USDT)"`
 	Mode                string          `conf:"mode,运行模式 - backtest=回测,paper=模拟,live=实盘"`
@@ -87,40 +116,27 @@ type BollingerBandsParameters struct {
 
 // BacktestConfig 回测配置
 type BacktestConfig struct {
-	StartDate  string  `conf:"start_date,回测开始日期 - 格式2023-01-01，建议至少6个月数据"`
-	EndDate    string  `conf:"end_date,回测结束日期 - 格式2023-12-31，不能超过当前时间"`
-	Fee        float64 `conf:"fee,交易手续费率 - 0.001=0.1%，币安现货手续费"`
-	Slippage   float64 `conf:"slippage,滑点损失 - 0.0001=0.01%，模拟实际交易的价格偏差"`
-	DataSource string  `conf:"data_source,数据来源 - 目前仅支持binance"`
+	StartDate string  `conf:"start_date,回测开始日期"`
+	EndDate   string  `conf:"end_date,回测结束日期"`
+	Fee       float64 `conf:"fee,交易手续费率"`
+	Slippage  float64 `conf:"slippage,滑点损失"`
 }
 
 // AppConfig 全局配置实例
 var AppConfig = &Config{
-	Binance: BinanceConfig{
-		APIKey:    "",
-		SecretKey: "",
-		BaseURL:   "https://api.binance.com",
-		Timeout:   10, // 10秒，币安官方建议值
-		Security: SecurityConfig{
-			KeyType:        "HMAC", // 默认HMAC，建议升级到Ed25519
-			RecvWindow:     5000,   // 5秒时间窗口，币安默认值
-			EnableTimeSync: true,   // 启用时间同步
-			Permissions: PermissionsConfig{
-				EnableTrading:    false, // 默认禁用交易，需手动开启
-				EnableUserData:   true,  // 启用账户数据查询
-				EnableUserStream: false, // 默认禁用数据流
-				ReadOnly:         true,  // 默认只读模式，安全第一
-			},
-		},
-		RateLimit: RateLimitConfig{
-			RequestsPerSecond: 5,    // 每秒5个请求，保守设置
-			MaxRetries:        3,    // 最多重试3次
-			RetryDelay:        2,    // 重试延迟2秒
-			EnableRetryAfter:  true, // 启用Retry-After头解析
+	CEX: CEXConfig{
+		Binance: BinanceConfig{
+			APIKey:        "",
+			SecretKey:     "",
+			BaseURL:       "https://api.binance.com",
+			Timeout:       10,
+			EnableTrading: false,
+			ReadOnly:      true,
+			Database:      database.GetDefaultDatabaseConfig("tradingbot_binance"),
 		},
 	},
 	Trading: TradingConfig{
-		Symbol:              "BTCUSDT",
+		Symbol:              "", // 通过命令行参数设置
 		Timeframe:           "4h",
 		InitialCapital:      10000.0,
 		Mode:                "backtest",
@@ -143,11 +159,15 @@ var AppConfig = &Config{
 		},
 	},
 	Backtest: BacktestConfig{
-		StartDate:  "2023-01-01",
-		EndDate:    "2023-12-31",
-		Fee:        0.001,  // 0.1%
-		Slippage:   0.0001, // 0.01%
-		DataSource: "binance",
+		StartDate: "2023-01-01",
+		EndDate:   "2023-12-31",
+		Fee:       0.001,  // 0.1%
+		Slippage:  0.0001, // 0.01%
+	},
+	Symbols: []SymbolInfo{
+		{Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT"},
+		{Symbol: "ETHUSDT", BaseAsset: "ETH", QuoteAsset: "USDT"},
+		{Symbol: "WIFUSDT", BaseAsset: "WIF", QuoteAsset: "USDT"},
 	},
 }
 
@@ -158,10 +178,7 @@ func init() {
 
 // Validate 验证配置
 func (c *Config) Validate() error {
-	// 验证交易对
-	if c.Trading.Symbol == "" {
-		return fmt.Errorf("trading symbol cannot be empty")
-	}
+	// 注意：交易对现在通过命令行参数设置，这里不验证
 
 	// 验证时间周期
 	_, err := timeframes.ParseTimeframe(c.Trading.Timeframe)
@@ -211,6 +228,17 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateWithSymbol 验证配置（包含交易对）
+func (c *Config) ValidateWithSymbol() error {
+	// 验证交易对
+	if c.Trading.Symbol == "" {
+		return fmt.Errorf("trading symbol cannot be empty")
+	}
+
+	// 调用基础验证
+	return c.Validate()
 }
 
 // GetTimeframe 获取时间周期

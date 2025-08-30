@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"go-build-stream-gateway-go-server-main/src/config"
 	"go-build-stream-gateway-go-server-main/src/trading"
 
 	"github.com/xpwu/go-cmd/arg"
@@ -19,10 +20,18 @@ import (
 func RegisterBollingerTradingCmd() {
 	var configFile string
 	var createConfig bool
+	var symbol string
+	var timeframe string
+	var cex string
+	var listSymbols bool
 
 	cmd.RegisterCmd("bollinger", "run Bollinger Bands trading strategy", func(args *arg.Arg) {
 		args.String(&configFile, "c", "config file path")
 		args.Bool(&createConfig, "create-config", "create default config file and exit")
+		args.String(&symbol, "s", "trading symbol (e.g., BTCUSDT, WIFUSDT, ETHUSDT)")
+		args.String(&timeframe, "t", "timeframe (e.g., 1h, 4h, 1d)")
+		args.String(&cex, "cex", "centralized exchange (currently only supports: binance)")
+		args.Bool(&listSymbols, "list", "list all supported trading pairs and exit")
 		args.Parse()
 
 		// 确保配置文件路径是绝对路径
@@ -42,8 +51,29 @@ func RegisterBollingerTradingCmd() {
 			os.Exit(0)
 		}
 
+		// 如果只是列出支持的交易对
+		if listSymbols {
+			err := listSupportedSymbols()
+			if err != nil {
+				fmt.Printf("❌ Failed to list symbols: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+
+		// 设置默认值
+		if symbol == "" {
+			symbol = "BTCUSDT" // 默认交易对
+		}
+		if timeframe == "" {
+			timeframe = "4h" // 默认时间周期
+		}
+		if cex == "" {
+			cex = "binance" // 默认交易所
+		}
+
 		// 运行交易系统
-		err := runBollingerTrading(configFile)
+		err := runBollingerTrading(configFile, symbol, timeframe, cex)
 		if err != nil {
 			fmt.Printf("❌ Trading system error: %v\n", err)
 			os.Exit(1)
@@ -110,16 +140,89 @@ func createDefaultConfig(configPath string) error {
 	return nil
 }
 
+// listSupportedSymbols 列出所有支持的交易对
+func listSupportedSymbols() error {
+	fmt.Println("📊 Supported Trading Pairs")
+	fmt.Println(strings.Repeat("=", 50))
+
+	// 从主配置获取支持的交易对
+	symbols := make([]string, 0, len(config.AppConfig.Symbols))
+	for _, s := range config.AppConfig.Symbols {
+		symbols = append(symbols, s.Symbol)
+	}
+
+	if len(symbols) == 0 {
+		fmt.Println("❌ No trading pairs found in configuration")
+		fmt.Println("💡 Please check symbols section in bin/config.json file")
+		return nil
+	}
+
+	// 按类别分组显示
+	fmt.Printf("✅ Found %d supported trading pairs:\n\n", len(symbols))
+
+	// 分类显示
+	btcPairs := []string{}
+	ethPairs := []string{}
+	usdtPairs := []string{}
+	usdcPairs := []string{}
+	otherPairs := []string{}
+
+	for _, symbol := range symbols {
+		switch {
+		case strings.HasPrefix(symbol, "BTC"):
+			btcPairs = append(btcPairs, symbol)
+		case strings.HasPrefix(symbol, "ETH"):
+			ethPairs = append(ethPairs, symbol)
+		case strings.HasSuffix(symbol, "USDT"):
+			usdtPairs = append(usdtPairs, symbol)
+		case strings.HasSuffix(symbol, "USDC"):
+			usdcPairs = append(usdcPairs, symbol)
+		default:
+			otherPairs = append(otherPairs, symbol)
+		}
+	}
+
+	if len(btcPairs) > 0 {
+		fmt.Printf("🟠 BTC Pairs: %s\n", strings.Join(btcPairs, ", "))
+	}
+	if len(ethPairs) > 0 {
+		fmt.Printf("🔵 ETH Pairs: %s\n", strings.Join(ethPairs, ", "))
+	}
+	if len(usdtPairs) > 0 {
+		fmt.Printf("🟢 USDT Pairs: %s\n", strings.Join(usdtPairs, ", "))
+	}
+	if len(usdcPairs) > 0 {
+		fmt.Printf("🟡 USDC Pairs: %s\n", strings.Join(usdcPairs, ", "))
+	}
+	if len(otherPairs) > 0 {
+		fmt.Printf("⚪ Other Pairs: %s\n", strings.Join(otherPairs, ", "))
+	}
+
+	fmt.Println("\n💡 Usage: ./bin/tradingbot bollinger -s <SYMBOL>")
+	fmt.Println("   Example: ./bin/tradingbot bollinger -s BTCUSDT")
+
+	return nil
+}
+
 // runBollingerTrading 运行布林道交易系统
-func runBollingerTrading(configPath string) error {
+func runBollingerTrading(configPath, symbol, timeframe, cex string) error {
 	fmt.Println("🤖 Bollinger Bands Trading System")
 	fmt.Println(strings.Repeat("=", 50))
+	fmt.Printf("📊 Trading Pair: %s\n", symbol)
+	fmt.Printf("⏰ Timeframe: %s\n", timeframe)
+	fmt.Printf("🏢 Exchange: %s\n", cex)
 
 	// 创建交易系统
 	fmt.Println("📋 Using global config")
 	tradingSystem, err := trading.NewTradingSystem()
 	if err != nil {
 		return fmt.Errorf("failed to create trading system: %w", err)
+	}
+
+	// 设置交易对、时间周期和交易所
+	err = tradingSystem.SetSymbolTimeframeAndCEX(symbol, timeframe, cex)
+	if err != nil {
+		return fmt.Errorf("failed to set symbol, timeframe and CEX: %w", err)
 	}
 
 	// 初始化

@@ -117,6 +117,11 @@ kline: build
 	@echo "📊 测试K线数据..."
 	@./bin/$(PROJECT_NAME) kline -s BTCUSDT -i 1h -l 5 -v
 
+# 数据库回测（使用数据库优化）
+backtest-db: build
+	@echo "📊 运行数据库优化回测..."
+	@./bin/$(PROJECT_NAME) bollinger
+
 # 运行回测示例
 run-backtest: build dirs
 	@echo "运行回测示例..."
