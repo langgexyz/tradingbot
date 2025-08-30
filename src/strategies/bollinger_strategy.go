@@ -33,6 +33,10 @@ type BollingerBandsStrategy struct {
 	lastTradeBar   int
 	lastTradePrice decimal.Decimal
 
+	// 🔥 新增：跟踪持仓期间最高价格（移动止盈关键字段）
+	highestPriceSinceBuy decimal.Decimal
+	hasBought            bool
+
 	// 卖出策略
 	sellStrategy strategy.SellStrategy
 }
@@ -156,6 +160,11 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 
 	currentPrice := kline.Close
 
+	// 🔥 更新持仓期间最高价格
+	if s.hasBought && currentPrice.GreaterThan(s.highestPriceSinceBuy) {
+		s.highestPriceSinceBuy = currentPrice
+	}
+
 	// 买入信号：价格触及下轨且无持仓
 	if currentPrice.LessThanOrEqual(bb.LowerBand) && portfolio.Position.IsZero() {
 		signals = append(signals, &strategy.Signal{
@@ -167,6 +176,10 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 
 		s.lastTradeBar = s.currentBar
 		s.lastTradePrice = currentPrice
+
+		// 🔥 初始化移动止盈跟踪
+		s.hasBought = true
+		s.highestPriceSinceBuy = currentPrice
 	}
 
 	// 卖出决策完全由SellStrategy处理，这里不再生成卖出信号
@@ -207,6 +220,7 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 			EntryPrice:   s.lastTradePrice,
 			CurrentPrice: currentPrice,
 			CurrentPnL:   pnlPercent,
+			HighestPrice: s.highestPriceSinceBuy, // 🔥 修复关键bug：提供最高价格
 		}
 
 		sellSignal := s.sellStrategy.ShouldSell(kline, tradeInfo)
@@ -241,6 +255,11 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 func (s *BollingerBandsStrategy) resetTradeState() {
 	s.lastTradeBar = s.currentBar
 	s.lastTradePrice = decimal.Zero
+
+	// 🔥 重置移动止盈状态
+	s.hasBought = false
+	s.highestPriceSinceBuy = decimal.Zero
+
 	if s.sellStrategy != nil {
 		s.sellStrategy.Reset()
 	}
