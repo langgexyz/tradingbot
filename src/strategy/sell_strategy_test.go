@@ -611,8 +611,16 @@ func TestTrailingSellStrategy_ComprehensiveCoverage(t *testing.T) {
 		assert.False(t, signal3.ShouldSell)
 
 		// Drop by trailing amount - should sell
+		// 重要：设置正确的最高价来模拟回撤
 		kline4 := createTestKline(57000) // Dropped 5% from peak of 60000
-		tradeInfo4 := createTestTradeInfo(50000, 57000, 1)
+		tradeInfo4 := &TradeInfo{
+			EntryPrice:   decimal.NewFromFloat(50000),
+			CurrentPrice: decimal.NewFromFloat(57000),
+			HighestPrice: decimal.NewFromFloat(60000), // 明确设置峰值为60000
+			CurrentPnL:   decimal.NewFromFloat(0.16),  // 16% profit (高于15%最小阈值)
+			EntryTime:    time.Now().Add(-24 * time.Hour),
+			HoldingDays:  1,
+		}
 		signal4 := strategy.ShouldSell(kline4, tradeInfo4)
 		assert.True(t, signal4.ShouldSell)
 		assert.Contains(t, signal4.Reason, "trailing stop")
@@ -634,13 +642,27 @@ func TestTrailingSellStrategy_ComprehensiveCoverage(t *testing.T) {
 
 		// Small drop, not enough to trigger
 		kline3 := createTestKline(60000) // 20% profit, 3.2% drop from peak
-		tradeInfo3 := createTestTradeInfo(50000, 60000, 1)
+		tradeInfo3 := &TradeInfo{
+			EntryPrice:   decimal.NewFromFloat(50000),
+			CurrentPrice: decimal.NewFromFloat(60000),
+			HighestPrice: decimal.NewFromFloat(62000), // 峰值为62000
+			CurrentPnL:   decimal.NewFromFloat(0.20),  // 20% profit
+			EntryTime:    time.Now().Add(-24 * time.Hour),
+			HoldingDays:  1,
+		}
 		signal3 := strategy.ShouldSell(kline3, tradeInfo3)
 		assert.False(t, signal3.ShouldSell) // Drop less than 5%
 
 		// Larger drop, should trigger
 		kline4 := createTestKline(58900) // 17.8% profit, 5% drop from 62000 peak
-		tradeInfo4 := createTestTradeInfo(50000, 58900, 1)
+		tradeInfo4 := &TradeInfo{
+			EntryPrice:   decimal.NewFromFloat(50000),
+			CurrentPrice: decimal.NewFromFloat(58900),
+			HighestPrice: decimal.NewFromFloat(62000), // 峰值为62000
+			CurrentPnL:   decimal.NewFromFloat(0.178), // 17.8% profit
+			EntryTime:    time.Now().Add(-24 * time.Hour),
+			HoldingDays:  1,
+		}
 		signal4 := strategy.ShouldSell(kline4, tradeInfo4)
 		assert.True(t, signal4.ShouldSell)
 	})

@@ -100,8 +100,17 @@ func (s *TechnicalSellStrategy) ShouldSell(kline *cex.KlineData, tradeInfo *Trad
 		return &SellSignal{ShouldSell: false}
 	}
 
-	// 这里需要布林带数据，暂时简化为价格相对高位判断
-	// 实际使用时需要传入技术指标数据
+	// 简化的技术判断：当盈利超过最小阈值时，根据价格动量决定是否卖出
+	// 如果盈利超过15%，则认为是技术性卖出时机
+	technicalThreshold := decimal.NewFromFloat(0.15) // 15%
+	if tradeInfo.CurrentPnL.GreaterThanOrEqual(technicalThreshold) {
+		return &SellSignal{
+			ShouldSell: true,
+			Reason: fmt.Sprintf("technical sell: %.2f%% profit reached technical threshold",
+				tradeInfo.CurrentPnL.Mul(decimal.NewFromInt(100)).InexactFloat64()),
+			Strength: 1.0,
+		}
+	}
 
 	return &SellSignal{ShouldSell: false}
 }

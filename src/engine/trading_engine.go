@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	"tradingbot/src/cex"
@@ -27,8 +26,9 @@ type TradingEngine struct {
 	positionSizePercent decimal.Decimal
 	minTradeAmount      decimal.Decimal
 
-	// 信号处理器
-	signalRegistry *SignalHandlerRegistry
+	// 统一数据喂入和挂单管理
+	dataFeed     DataFeed
+	orderManager OrderManager
 
 	// 运行状态
 	isRunning bool
@@ -45,6 +45,8 @@ func NewTradingEngine(
 	strategy strategy.Strategy,
 	executor executor.Executor,
 	cexClient cex.CEXClient,
+	dataFeed DataFeed,
+	orderManager OrderManager,
 ) *TradingEngine {
 	engine := &TradingEngine{
 		tradingPair:         pair,
@@ -52,20 +54,12 @@ func NewTradingEngine(
 		strategy:            strategy,
 		executor:            executor,
 		cexClient:           cexClient,
+		dataFeed:            dataFeed,
+		orderManager:        orderManager,
 		positionSizePercent: decimal.NewFromFloat(0.95),
 		minTradeAmount:      decimal.NewFromFloat(10.0),
 		stopChan:            make(chan struct{}),
 	}
-
-	// 初始化信号处理器注册表
-	engine.signalRegistry = NewSignalHandlerRegistry()
-
-	// 注册默认的信号处理器
-	buyHandler := NewBuySignalHandler(executor, pair, engine.positionSizePercent, engine.minTradeAmount)
-	sellHandler := NewSellSignalHandler(executor, pair)
-
-	engine.signalRegistry.RegisterHandler("BUY", buyHandler)
-	engine.signalRegistry.RegisterHandler("SELL", sellHandler)
 
 	return engine
 }
@@ -80,121 +74,114 @@ func (e *TradingEngine) SetMinTradeAmount(amount float64) {
 	e.minTradeAmount = decimal.NewFromFloat(amount)
 }
 
-// RunBacktest 运行回测
+// RunBacktest 运行回测（使用统一的数据喂入机制）
 func (e *TradingEngine) RunBacktest(ctx context.Context, startTime, endTime time.Time) error {
-	ctx, logger := log.WithCtx(ctx)
-	logger.PushPrefix("TradingEngine")
-
-	logger.Info(fmt.Sprintf("开始回测: symbol=%s, timeframe=%s, start=%s, end=%s",
-		e.tradingPair.String(),
-		e.timeframe.String(),
-		startTime.Format("2006-01-02"),
-		endTime.Format("2006-01-02")))
-
-	// 获取历史数据
-	startTimeMs := startTime.Unix() * 1000
-	endTimeMs := endTime.Unix() * 1000
-
-	// 直接从 CEX 客户端获取数据
-	logger.Info("使用CEX客户端获取数据")
-	tradingPair := e.tradingPair
-	klines, err := e.cexClient.GetKlinesWithTimeRange(ctx, tradingPair, e.timeframe.GetBinanceInterval(),
-		time.Unix(startTimeMs/1000, 0), time.Unix(endTimeMs/1000, 0), 1000)
-
-	if err != nil {
-		return fmt.Errorf("failed to load historical data: %w", err)
-	}
-
-	if len(klines) == 0 {
-		return fmt.Errorf("no historical data available")
-	}
-
-	// 按时间排序
-	sort.Slice(klines, func(i, j int) bool {
-		return klines[i].OpenTime.Before(klines[j].OpenTime)
-	})
-
-	logger.Info(fmt.Sprintf("加载历史数据完成: klines=%d", len(klines)))
-
-	// 保存K线数据供后续使用（如回撤计算）
-	e.lastKlines = klines
-
-	// 逐个处理K线数据
-	for i, kline := range klines {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		// 获取当前投资组合状态
-		portfolio, err := e.executor.GetPortfolio(ctx)
-		if err != nil {
-			logger.Error("获取投资组合失败", "error", err)
-			continue
-		}
-
-		// 更新当前价格
-		portfolio.CurrentPrice = kline.Close
-		portfolio.Timestamp = kline.OpenTime
-
-		// 执行策略
-		signals, err := e.strategy.OnData(ctx, kline, portfolio)
-		if err != nil {
-			logger.Error("策略执行失败", "error", err)
-			continue
-		}
-
-		// 处理交易信号
-		for _, signal := range signals {
-			err := e.processSignal(ctx, signal, kline, portfolio)
-			if err != nil {
-				logger.Error("处理交易信号失败", "error", err)
-			}
-		}
-
-		// 定期输出进度
-		if i%100 == 0 || i == len(klines)-1 {
-			progress := float64(i+1) / float64(len(klines)) * 100
-			logger.Info(fmt.Sprintf("回测进度: progress=%.1f%%, kline=%d, total=%d", progress, i+1, len(klines)))
-		}
-	}
-
-	logger.Info("回测完成")
-	return nil
+	return e.Run(ctx)
 }
 
-// RunLive 运行实盘交易
+// RunLive 运行实盘交易（使用统一的数据喂入机制）
 func (e *TradingEngine) RunLive(ctx context.Context) error {
+	return e.Run(ctx)
+}
+
+// Run 统一的运行方法（支持回测和实盘）
+func (e *TradingEngine) Run(ctx context.Context) error {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingEngine")
 
-	logger.Info("开始实盘交易", "symbol", e.tradingPair.String(), "timeframe", e.timeframe.String())
+	logger.Info("开始交易引擎", "symbol", e.tradingPair.String(), "timeframe", e.timeframe.String())
 
 	e.isRunning = true
 	defer func() { e.isRunning = false }()
 
-	// 获取时间间隔
-	interval := e.getTimeframeInterval()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// 启动数据喂入
+	err := e.dataFeed.Start(ctx)
+	if err != nil {
+		return fmt.Errorf("启动数据喂入失败: %w", err)
+	}
+	defer e.dataFeed.Stop()
+
+	var klineCount int
+	var allKlines []*cex.KlineData
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("收到停止信号，退出实盘交易")
+			logger.Info("收到停止信号，退出交易")
 			return ctx.Err()
 
 		case <-e.stopChan:
-			logger.Info("手动停止实盘交易")
-			return nil
+			logger.Info("手动停止交易")
+			goto finished
 
-		case <-ticker.C:
-			err := e.processLiveTick(ctx)
+		default:
+			// 获取下一个K线数据
+			kline, err := e.dataFeed.GetNext(ctx)
 			if err != nil {
-				logger.Error("处理实时数据失败", "error", err)
-				// 继续运行，不因单次错误退出
+				logger.Error("获取K线数据失败", "error", err)
+				continue
+			}
+
+			if kline == nil {
+				logger.Info("数据流结束")
+				goto finished
+			}
+
+			// 存储K线数据
+			allKlines = append(allKlines, kline)
+			klineCount++
+
+			// 1️⃣ 首先检查并执行挂单
+			executedOrders, err := e.orderManager.CheckAndExecuteOrders(ctx, kline)
+			if err != nil {
+				logger.Error("检查挂单失败", "error", err)
+			}
+
+			if len(executedOrders) > 0 {
+				logger.Info("挂单执行", "count", len(executedOrders))
+			}
+
+			// 2️⃣ 获取当前投资组合状态
+			portfolio, err := e.executor.GetPortfolio(ctx)
+			if err != nil {
+				logger.Error("获取投资组合失败", "error", err)
+				continue
+			}
+
+			// 更新当前价格和时间
+			portfolio.CurrentPrice = kline.Close
+			portfolio.Timestamp = kline.OpenTime
+
+			// 3️⃣ 执行策略分析
+			signals, err := e.strategy.OnData(ctx, kline, portfolio)
+			if err != nil {
+				logger.Error("策略执行失败", "error", err)
+				continue
+			}
+
+			// 4️⃣ 处理交易信号（生成新挂单）
+			for _, signal := range signals {
+				err := e.processSignal(ctx, signal, kline, portfolio)
+				if err != nil {
+					logger.Error("处理交易信号失败", "error", err)
+				}
+			}
+
+			// 定期输出进度
+			if klineCount%100 == 0 {
+				logger.Info("交易进度",
+					"klines", klineCount,
+					"pending_orders", e.orderManager.GetOrderCount(),
+					"current_time", e.dataFeed.GetCurrentTime().Format("2006-01-02 15:04"))
 			}
 		}
 	}
+
+finished:
+	// 保存K线数据供后续使用（如回撤计算）
+	e.lastKlines = allKlines
+	logger.Info("交易完成", "total_klines", len(allKlines))
+	return nil
 }
 
 // Stop 停止交易引擎
@@ -209,62 +196,130 @@ func (e *TradingEngine) GetKlines() []*cex.KlineData {
 	return e.lastKlines
 }
 
-// processLiveTick 处理实时数据
-func (e *TradingEngine) processLiveTick(ctx context.Context) error {
-	ctx, logger := log.WithCtx(ctx)
-
-	// 直接从 CEX 客户端获取最新数据
-	tradingPair := e.tradingPair
-	klines, err := e.cexClient.GetKlines(ctx, tradingPair, e.timeframe.GetBinanceInterval(), 1)
-
-	if err != nil {
-		return fmt.Errorf("failed to get latest kline: %w", err)
-	}
-
-	if len(klines) == 0 {
-		return fmt.Errorf("no kline data available")
-	}
-
-	kline := klines[0]
-
-	// 获取当前投资组合状态
-	portfolio, err := e.executor.GetPortfolio(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get portfolio: %w", err)
-	}
-
-	// 更新当前价格
-	portfolio.CurrentPrice = kline.Close
-	portfolio.Timestamp = kline.OpenTime
-
-	// 执行策略
-	signals, err := e.strategy.OnData(ctx, kline, portfolio)
-	if err != nil {
-		return fmt.Errorf("strategy execution failed: %w", err)
-	}
-
-	// 处理交易信号
-	for _, signal := range signals {
-		err := e.processSignal(ctx, signal, kline, portfolio)
-		if err != nil {
-			logger.Error("处理交易信号失败", "error", err)
-		}
-	}
-
-	return nil
-}
-
-// processSignal 处理交易信号
+// processSignal 处理交易信号（统一生成挂单）
 func (e *TradingEngine) processSignal(ctx context.Context, signal *strategy.Signal, kline *cex.KlineData, portfolio *executor.Portfolio) error {
 	ctx, logger := log.WithCtx(ctx)
 
 	logger.Info("处理交易信号",
 		"type", signal.Type,
 		"reason", signal.Reason,
-		"strength", signal.Strength)
+		"strength", signal.Strength,
+		"current_price", kline.Close.String())
 
-	// 使用信号处理器注册表来处理信号
-	return e.signalRegistry.HandleSignal(ctx, signal, kline, portfolio)
+	switch signal.Type {
+	case "BUY":
+		return e.handleBuySignal(ctx, signal, kline, portfolio)
+	case "SELL":
+		return e.handleSellSignal(ctx, signal, kline, portfolio)
+	default:
+		return fmt.Errorf("未知信号类型: %s", signal.Type)
+	}
+}
+
+// handleBuySignal 处理买入信号 - 生成限价买单
+func (e *TradingEngine) handleBuySignal(ctx context.Context, signal *strategy.Signal, kline *cex.KlineData, portfolio *executor.Portfolio) error {
+	ctx, logger := log.WithCtx(ctx)
+
+	// 计算买入数量
+	availableCash := portfolio.Cash
+	tradeAmount := availableCash.Mul(e.positionSizePercent)
+
+	if tradeAmount.LessThan(e.minTradeAmount) {
+		logger.Info("交易金额过小，跳过买入", "amount", tradeAmount.String(), "min", e.minTradeAmount.String())
+		return nil
+	}
+
+	// 设置买入限价：比当前价格低0.1%（更优价格）
+	buySlippage := decimal.NewFromFloat(0.001) // 0.1%
+	limitPrice := kline.Close.Mul(decimal.NewFromInt(1).Sub(buySlippage))
+	quantity := tradeAmount.Div(limitPrice)
+
+	// 创建挂单
+	orderID := fmt.Sprintf("buy_%d_%s", time.Now().UnixNano(), e.tradingPair.Base)
+	expireTime := kline.OpenTime.Add(24 * time.Hour) // 24小时过期
+
+	pendingOrder := &PendingOrder{
+		ID:           orderID,
+		Type:         PendingOrderTypeBuyLimit,
+		TradingPair:  e.tradingPair,
+		Quantity:     quantity,
+		Price:        limitPrice,
+		CreateTime:   kline.OpenTime,
+		ExpireTime:   &expireTime,
+		Reason:       signal.Reason,
+		OriginSignal: signal.Type,
+	}
+
+	logger.Info("🔵 生成买入限价单",
+		"order_id", orderID,
+		"limit_price", limitPrice.String(),
+		"quantity", quantity.String(),
+		"current_price", kline.Close.String())
+
+	return e.orderManager.PlaceOrder(ctx, pendingOrder)
+}
+
+// handleSellSignal 处理卖出信号 - 生成限价卖单
+func (e *TradingEngine) handleSellSignal(ctx context.Context, signal *strategy.Signal, kline *cex.KlineData, portfolio *executor.Portfolio) error {
+	ctx, logger := log.WithCtx(ctx)
+
+	if portfolio.Position.IsZero() {
+		logger.Info("无持仓，跳过卖出信号")
+		return nil
+	}
+
+	// 计算卖出数量（支持部分卖出）
+	var sellQuantity decimal.Decimal
+	if signal.Strength <= 0 || signal.Strength > 1 {
+		sellQuantity = portfolio.Position
+		logger.Info("信号强度无效，执行全仓卖出", "strength", signal.Strength)
+	} else {
+		sellQuantity = portfolio.Position.Mul(decimal.NewFromFloat(signal.Strength))
+		if sellQuantity.GreaterThan(portfolio.Position) {
+			sellQuantity = portfolio.Position
+		}
+		logger.Info("执行部分卖出",
+			"strength", signal.Strength,
+			"sell_quantity", sellQuantity.String(),
+			"total_position", portfolio.Position.String())
+	}
+
+	// 设置卖出限价：比当前价格高0.1%（更优价格）
+	sellSlippage := decimal.NewFromFloat(0.001) // 0.1%
+	limitPrice := kline.Close.Mul(decimal.NewFromInt(1).Add(sellSlippage))
+
+	// 取消现有的卖出挂单（避免重复挂单）
+	pendingOrders := e.orderManager.GetPendingOrders()
+	for _, order := range pendingOrders {
+		if order.Type == PendingOrderTypeSellLimit {
+			logger.Info("取消现有卖出挂单", "id", order.ID)
+			e.orderManager.CancelOrder(ctx, order.ID)
+		}
+	}
+
+	// 创建新的卖出挂单
+	orderID := fmt.Sprintf("sell_%d_%s", time.Now().UnixNano(), e.tradingPair.Base)
+	expireTime := kline.OpenTime.Add(24 * time.Hour) // 24小时过期
+
+	pendingOrder := &PendingOrder{
+		ID:           orderID,
+		Type:         PendingOrderTypeSellLimit,
+		TradingPair:  e.tradingPair,
+		Quantity:     sellQuantity,
+		Price:        limitPrice,
+		CreateTime:   kline.OpenTime,
+		ExpireTime:   &expireTime,
+		Reason:       signal.Reason,
+		OriginSignal: signal.Type,
+	}
+
+	logger.Info("🔴 生成卖出限价单",
+		"order_id", orderID,
+		"limit_price", limitPrice.String(),
+		"quantity", sellQuantity.String(),
+		"current_price", kline.Close.String())
+
+	return e.orderManager.PlaceOrder(ctx, pendingOrder)
 }
 
 // getTimeframeInterval 获取时间周期对应的时间间隔
@@ -298,5 +353,10 @@ func (e *TradingEngine) getTimeframeInterval() time.Duration {
 // Close 关闭交易引擎
 func (e *TradingEngine) Close() error {
 	e.Stop()
+	if e.dataFeed != nil {
+		if err := e.dataFeed.Stop(); err != nil {
+			return err
+		}
+	}
 	return e.executor.Close()
 }

@@ -173,7 +173,7 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 
 	// 创建回测执行器
 	initialCapitalDecimal := decimal.NewFromFloat(initialCapital)
-	backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
+	// backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
 
 	// 设置手续费（从CEX客户端获取）
 	fee := ts.cexClient.GetTradingFee()
@@ -184,19 +184,6 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 	if err != nil {
 		return nil, fmt.Errorf("invalid timeframe: %w", err)
 	}
-
-	// 创建交易引擎
-	ts.tradingEngine = engine.NewTradingEngine(
-		pair,
-		timeframe,
-		strategyImpl,
-		backtestExecutor,
-		ts.cexClient,
-	)
-
-	// 设置交易参数
-	ts.tradingEngine.SetPositionSizePercent(TradingConfigValue.PositionSizePercent)
-	ts.tradingEngine.SetMinTradeAmount(TradingConfigValue.MinTradeAmount)
 
 	// 解析时间范围
 	startTime, err := time.Parse("2006-01-02", startDate)
@@ -209,7 +196,43 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 		return nil, fmt.Errorf("invalid end date format (expected YYYY-MM-DD): %w", err)
 	}
 
-	// 运行回测
+	// 🔄 获取历史数据用于回测
+	fmt.Println("📊 Loading historical data...")
+	klines, err := ts.cexClient.GetKlinesWithTimeRange(ts.ctx, pair, timeframe.GetBinanceInterval(),
+		startTime, endTime, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load historical data: %w", err)
+	}
+
+	if len(klines) == 0 {
+		return nil, fmt.Errorf("no historical data available")
+	}
+
+	fmt.Printf("✓ Loaded %d klines for %s\n", len(klines), pair.String())
+
+	// 🎯 创建回测数据喂入器
+	dataFeed := engine.NewBacktestDataFeed(klines)
+
+	// 🎯 创建回测挂单管理器
+	orderManager := engine.NewBacktestOrderManager(backtestExecutor)
+
+	// 创建交易引擎
+	ts.tradingEngine = engine.NewTradingEngine(
+		pair,
+		timeframe,
+		strategyImpl,
+		backtestExecutor,
+		ts.cexClient,
+		dataFeed,
+		orderManager,
+	)
+
+	// 设置交易参数
+	ts.tradingEngine.SetPositionSizePercent(TradingConfigValue.PositionSizePercent)
+	ts.tradingEngine.SetMinTradeAmount(TradingConfigValue.MinTradeAmount)
+
+	// 🚀 运行统一的tick-by-tick回测
+	fmt.Println("🎮 Starting tick-by-tick backtest simulation...")
 	err = ts.tradingEngine.RunBacktest(ts.ctx, startTime, endTime)
 	if err != nil {
 		return nil, fmt.Errorf("backtest failed: %w", err)
@@ -226,7 +249,7 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 
 	// 计算最大回撤 - 使用真实K线数据
 	capitalForDrawdown := stats["initial_capital"].(decimal.Decimal)
-	klines := ts.tradingEngine.GetKlines() // 获取回测过程中的K线数据
+	klines = ts.tradingEngine.GetKlines() // 获取回测过程中的K线数据
 	drawdownInfo := CalculateDrawdownWithKlines(orders, klines, capitalForDrawdown)
 
 	// 计算年化收益率 (APR)
@@ -348,6 +371,16 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 		return fmt.Errorf("invalid timeframe: %w", err)
 	}
 
+	// 🎯 创建实盘数据喂入器
+	tickerInterval, err := timeframe.GetDuration() // 根据时间框架设置数据获取频率
+	if err != nil {
+		return fmt.Errorf("invalid timeframe duration: %w", err)
+	}
+	dataFeed := engine.NewLiveDataFeed(ts.cexClient, pair, timeframe.GetBinanceInterval(), tickerInterval)
+
+	// 🎯 创建实盘挂单管理器
+	orderManager := engine.NewLiveOrderManager(ts.cexClient)
+
 	// 创建交易引擎
 	ts.tradingEngine = engine.NewTradingEngine(
 		pair,
@@ -355,13 +388,16 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 		strategyImpl,
 		liveExecutor,
 		ts.cexClient,
+		dataFeed,
+		orderManager,
 	)
 
 	// 设置交易参数
 	ts.tradingEngine.SetPositionSizePercent(TradingConfigValue.PositionSizePercent)
 	ts.tradingEngine.SetMinTradeAmount(TradingConfigValue.MinTradeAmount)
 
-	// 运行实盘交易
+	// 🚀 运行统一的tick-by-tick实盘交易
+	fmt.Println("🔴 Starting tick-by-tick live trading...")
 	return ts.tradingEngine.RunLive(ts.ctx)
 }
 
@@ -458,9 +494,9 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 	// 显示最近的交易
 	if len(stats.Orders) > 0 {
 		fmt.Println("\n📋 RECENT TRADES (Last 10)")
-		fmt.Println("--------------------------------------------------------------------------------")
-		fmt.Println("Time       Side Quantity   Price        P&L          Reason         ")
-		fmt.Println("--------------------------------------------------------------------------------")
+		fmt.Println("================================================================================================")
+		fmt.Println("Time       Side Quantity     Price     Amount($)     P&L          Reason         ")
+		fmt.Println("================================================================================================")
 
 		displayCount := len(stats.Orders)
 		if displayCount > 10 {
@@ -479,11 +515,15 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 				}
 			}
 
-			fmt.Printf("%s %4s %12.6f %12.2f %12s %s\n",
+			// 计算交易金额 (数量 × 价格)
+			amount := order.Quantity.Mul(order.Price)
+
+			fmt.Printf("%s %4s %12.0f %9.4f %10.2f %12s %s\n",
 				order.Timestamp.Format("01-02 15:04"),
 				order.Side,
 				order.Quantity.InexactFloat64(),
 				order.Price.InexactFloat64(),
+				amount.InexactFloat64(),
 				pnlStr,
 				"", // reason 暂时为空
 			)
@@ -539,13 +579,17 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 	// 显示每笔交易的详细情况
 	if len(stats.Trades) > 0 {
 		fmt.Printf("\n📊 ALL COMPLETED TRADES: %d\n", len(stats.Trades))
-		fmt.Println("================================================================================")
-		fmt.Println("序号 买入时间      买入价格      卖出时间      卖出价格      盈利%    净盈利$     持仓时间    卖出原因")
-		fmt.Println("================================================================================")
+		fmt.Println("================================================================================================================================================")
+		fmt.Println("序号 买入时间      买入价格     买入金额     卖出时间      卖出价格     卖出金额      盈利%   净盈利$     持仓时间    卖出原因")
+		fmt.Println("================================================================================================================================================")
 
 		for i, trade := range stats.Trades {
 			// 计算盈利百分比
 			profitPercent := trade.PnL.Div(trade.BuyOrder.Price.Mul(trade.BuyOrder.Quantity)).Mul(decimal.NewFromInt(100))
+
+			// 计算买入金额和卖出金额
+			buyAmount := trade.BuyOrder.Quantity.Mul(trade.BuyOrder.Price)
+			sellAmount := trade.SellOrder.Quantity.Mul(trade.SellOrder.Price)
 
 			// 确定卖出原因
 			sellReason := "触及上轨"
@@ -557,12 +601,14 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 				}
 			}
 
-			fmt.Printf("%2d   %s  %12.8f  %s  %12.8f  %6.2f%%  $%9.2f  %8s   %s\n",
+			fmt.Printf("%2d   %s %10.6f  $%8.2f  %s %10.6f  $%8.2f   %6.2f%%  $%8.2f  %8s   %s\n",
 				i+1,
 				trade.BuyOrder.Timestamp.Format("01-02 15:04"),
 				trade.BuyOrder.Price.InexactFloat64(),
+				buyAmount.InexactFloat64(),
 				trade.SellOrder.Timestamp.Format("01-02 15:04"),
 				trade.SellOrder.Price.InexactFloat64(),
+				sellAmount.InexactFloat64(),
 				profitPercent.InexactFloat64(),
 				trade.PnL.InexactFloat64(),
 				formatDuration(trade.Duration),
@@ -570,7 +616,7 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 			)
 		}
 
-		fmt.Println("================================================================================")
+		fmt.Println("================================================================================================================================================")
 
 		// 统计不同盈利范围的交易
 		fmt.Println("\n📈 PROFIT DISTRIBUTION")
