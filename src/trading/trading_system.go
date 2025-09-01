@@ -17,6 +17,27 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// parseFlexibleDateTime 解析灵活的日期时间格式
+func parseFlexibleDateTime(dateStr string) (time.Time, error) {
+	// 支持的时间格式列表（按优先级排序）
+	formats := []string{
+		"2006-01-02 15:04:05", // YYYY-MM-DD HH:MM:SS
+		"2006-01-02 15:04",    // YYYY-MM-DD HH:MM
+		"2006-01-02",          // YYYY-MM-DD
+	}
+
+	// 获取本地时区
+	localLocation := time.Now().Location()
+
+	for _, format := range formats {
+		if t, err := time.ParseInLocation(format, dateStr, localLocation); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("unsupported date format: %s (supported: YYYY-MM-DD, YYYY-MM-DD HH:MM, YYYY-MM-DD HH:MM:SS)", dateStr)
+}
+
 // TradingSystem 交易系统（重构版）
 type TradingSystem struct {
 	cexClient     cex.CEXClient
@@ -120,30 +141,38 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 		return nil, fmt.Errorf("invalid timeframe: %w", err)
 	}
 
-	// 解析时间范围
-	startTime, err := time.Parse("2006-01-02", startDate)
+	// 解析时间范围（支持多种格式）
+	startTime, err := parseFlexibleDateTime(startDate)
 	if err != nil {
-		return nil, fmt.Errorf("invalid start date format (expected YYYY-MM-DD): %w", err)
+		return nil, fmt.Errorf("invalid start date format: %w", err)
 	}
 
-	endTime, err := time.Parse("2006-01-02", endDate)
+	endTime, err := parseFlexibleDateTime(endDate)
 	if err != nil {
-		return nil, fmt.Errorf("invalid end date format (expected YYYY-MM-DD): %w", err)
+		return nil, fmt.Errorf("invalid end date format: %w", err)
 	}
 
 	// 🔄 获取历史数据用于回测
 	fmt.Println("📊 Loading historical data...")
+
+	// 计算实际需要的开始时间（为了获取足够的历史数据计算指标）
+	timeframeDuration, _ := timeframe.GetDuration()
+	// 向前推30个时间周期以确保有足够的数据计算布林带
+	actualStartTime := startTime.Add(-30 * timeframeDuration)
+
 	klines, err := ts.cexClient.GetKlinesWithTimeRange(ts.ctx, pair, timeframe.GetBinanceInterval(),
-		startTime, endTime, 1000)
+		actualStartTime, endTime, 1000)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load historical data: %w", err)
 	}
 
 	if len(klines) == 0 {
-		return nil, fmt.Errorf("no historical data available")
+		return nil, fmt.Errorf("no historical data available for the requested time range. Check if the start time is not too recent")
 	}
 
-	fmt.Printf("✓ Loaded %d klines for %s\n", len(klines), pair.String())
+	fmt.Printf("✓ Loaded %d klines for %s (from %s to %s)\n",
+		len(klines), pair.String(),
+		actualStartTime.Format("01-02 15:04"), endTime.Format("01-02 15:04"))
 
 	// 🎯 创建回测数据喂入器
 	dataFeed := engine.NewBacktestDataFeed(klines)
@@ -320,8 +349,15 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 	}
 	dataFeed := engine.NewLiveDataFeed(ts.cexClient, pair, timeframe.GetBinanceInterval(), tickerInterval)
 
-	// 🎯 创建实盘挂单管理器
-	orderManager := engine.NewLiveOrderManager(ts.cexClient)
+	// 🎯 创建挂单管理器（根据是否为Dry Run选择不同类型）
+	var orderManager engine.OrderManager
+	if dryRun {
+		// Dry Run模式：使用回测挂单管理器（本地模拟）
+		orderManager = engine.NewBacktestOrderManager(liveExecutor)
+	} else {
+		// 真实交易模式：使用实盘挂单管理器
+		orderManager = engine.NewLiveOrderManager(ts.cexClient)
+	}
 
 	// 创建交易引擎
 	ts.tradingEngine = engine.NewTradingEngine(

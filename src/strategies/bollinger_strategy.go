@@ -10,6 +10,7 @@ import (
 	"tradingbot/src/strategy"
 
 	"github.com/shopspring/decimal"
+	"github.com/xpwu/go-log/log"
 )
 
 // BollingerBandsStrategy 布林道策略
@@ -104,7 +105,18 @@ func (s *BollingerBandsStrategy) SetParams(params strategy.StrategyParams) error
 
 // OnData 处理新的K线数据
 func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineData, portfolio *executor.Portfolio) ([]*strategy.Signal, error) {
+	ctx, logger := log.WithCtx(ctx)
+	logger.PushPrefix("BollingerStrategy")
+
 	s.currentBar++
+
+	// 开发日志：只在关键节点打印
+	if s.currentBar%10 == 1 || s.currentBar <= 5 {
+		logger.Info("📊 处理",
+			"bar", s.currentBar,
+			"price", kline.Close.String(),
+			"pos", portfolio.Position.String())
+	}
 
 	// 添加价格到历史数据
 	s.priceHistory = append(s.priceHistory, kline.Close)
@@ -117,45 +129,81 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineDat
 
 	// 检查是否有足够的数据计算布林道
 	if len(s.priceHistory) < s.Period {
+		// 只在开始和即将完成时打印
+		if s.currentBar == 1 || len(s.priceHistory) == s.Period-1 {
+			logger.Info("⚠️ 数据积累", "progress", fmt.Sprintf("%d/%d", len(s.priceHistory), s.Period))
+		}
 		return nil, nil
 	}
 
 	// 计算布林道指标
 	bbResult, err := s.bb.Calculate(s.priceHistory)
 	if err != nil {
+		logger.Error("❌ 布林带计算失败", "error", err)
 		return nil, fmt.Errorf("failed to calculate Bollinger Bands: %w", err)
 	}
 
 	bbResult.Timestamp = kline.OpenTime.Unix() * 1000
 
+	// 只在价格接近布林带边界时打印详细信息
+	priceVsUpper := kline.Close.Sub(bbResult.UpperBand)
+	priceVsLower := kline.Close.Sub(bbResult.LowerBand)
+	if priceVsLower.Abs().LessThan(decimal.NewFromFloat(0.00000010)) || priceVsUpper.Abs().LessThan(decimal.NewFromFloat(0.00000010)) {
+		logger.Info("🎯 接近边界",
+			"price", kline.Close.String(),
+			"upper", bbResult.UpperBand.String(),
+			"lower", bbResult.LowerBand.String(),
+			"vs_upper", priceVsUpper.String(),
+			"vs_lower", priceVsLower.String())
+	}
+
 	var signals []*strategy.Signal
 
 	// 检查冷却期
-	if s.lastTradeBar >= 0 && s.currentBar-s.lastTradeBar < s.CooldownBars {
+	inCooldown := s.lastTradeBar >= 0 && s.currentBar-s.lastTradeBar < s.CooldownBars
+	if inCooldown {
+		cooldownRemaining := s.CooldownBars - (s.currentBar - s.lastTradeBar)
+		logger.Info("⏳ 处于冷却期",
+			"last_trade_bar", s.lastTradeBar,
+			"current_bar", s.currentBar,
+			"cooldown_remaining", cooldownRemaining)
+
 		// 仍在冷却期，只检查止损止盈
-		stopSignals := s.checkStopConditions(kline, portfolio)
+		stopSignals := s.checkStopConditions(ctx, kline, portfolio)
 		signals = append(signals, stopSignals...)
 		return signals, nil
 	}
 
+	// 移除冗余的冷却期日志
+
 	// 检查止损止盈条件
-	stopSignals := s.checkStopConditions(kline, portfolio)
+	stopSignals := s.checkStopConditions(ctx, kline, portfolio)
 	signals = append(signals, stopSignals...)
 
 	// 如果有止损止盈信号，不再生成新的开仓信号
 	if len(stopSignals) > 0 {
+		logger.Info("🛑 生成止损止盈信号，跳过开仓信号", "stop_signals_count", len(stopSignals))
 		return signals, nil
 	}
 
 	// 生成交易信号
-	tradeSignals := s.generateTradeSignals(bbResult, kline, portfolio)
+	tradeSignals := s.generateTradeSignals(ctx, bbResult, kline, portfolio)
 	signals = append(signals, tradeSignals...)
+
+	// 只在有信号时打印分析结果
+	if len(signals) > 0 {
+		logger.Info("🎯 信号生成",
+			"total", len(signals),
+			"stop", len(stopSignals),
+			"trade", len(tradeSignals))
+	}
 
 	return signals, nil
 }
 
 // generateTradeSignals 生成交易信号
-func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBandsResult, kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+func (s *BollingerBandsStrategy) generateTradeSignals(ctx context.Context, bb *indicators.BollingerBandsResult, kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+	ctx, logger := log.WithCtx(ctx)
 	var signals []*strategy.Signal
 
 	currentPrice := kline.Close
@@ -165,11 +213,18 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 		s.highestPriceSinceBuy = currentPrice
 	}
 
+	// 简化买入条件分析日志（只在满足条件时打印）
+
 	// 买入信号：价格触及下轨且无持仓
 	if currentPrice.LessThanOrEqual(bb.LowerBand) && portfolio.Position.IsZero() {
+		reason := fmt.Sprintf("price %.4f touched lower band %.4f", currentPrice.InexactFloat64(), bb.LowerBand.InexactFloat64())
+		logger.Info("✅ 买入条件满足",
+			"reason", reason,
+			"signal_strength", 0.8)
+
 		signals = append(signals, &strategy.Signal{
 			Type:      "BUY",
-			Reason:    fmt.Sprintf("price %.4f touched lower band %.4f", currentPrice.InexactFloat64(), bb.LowerBand.InexactFloat64()),
+			Reason:    reason,
 			Strength:  0.8,
 			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
@@ -180,6 +235,22 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 		// 🔥 初始化移动止盈跟踪
 		s.hasBought = true
 		s.highestPriceSinceBuy = currentPrice
+
+		logger.Info("🔄 更新交易状态",
+			"last_trade_bar", s.lastTradeBar,
+			"last_trade_price", s.lastTradePrice.String(),
+			"has_bought", s.hasBought)
+	} else {
+		// 详细解释为什么不买入
+		reasons := []string{}
+		if !currentPrice.LessThanOrEqual(bb.LowerBand) {
+			reasons = append(reasons, "价格未触及下轨")
+		}
+		if !portfolio.Position.IsZero() {
+			reasons = append(reasons, "已有持仓")
+		}
+
+		// 移除冗余的"不满足"日志
 	}
 
 	// 卖出决策完全由SellStrategy处理，这里不再生成卖出信号
@@ -188,11 +259,13 @@ func (s *BollingerBandsStrategy) generateTradeSignals(bb *indicators.BollingerBa
 }
 
 // checkStopConditions 检查止损止盈条件（使用卖出策略）
-func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+func (s *BollingerBandsStrategy) checkStopConditions(ctx context.Context, kline *cex.KlineData, portfolio *executor.Portfolio) []*strategy.Signal {
+	ctx, logger := log.WithCtx(ctx)
 	var signals []*strategy.Signal
 
 	// 只有持有仓位时才检查止损止盈
 	if portfolio.Position.IsZero() || s.lastTradePrice.IsZero() {
+		// 跳过止损止盈检查（无持仓或无价格记录）
 		return signals
 	}
 
@@ -200,12 +273,25 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 	pnl := currentPrice.Sub(s.lastTradePrice)
 	pnlPercent := pnl.Div(s.lastTradePrice)
 
-	// 1. 止损检查（优先级最高）
+	// 简化盈亏日志 - 只在关键时刻打印
 	stopLossThreshold := decimal.NewFromFloat(-s.StopLossPercent)
+	willStopLoss := pnlPercent.LessThanOrEqual(stopLossThreshold)
+
+	// 只在即将止损时打印详细信息
+	if willStopLoss {
+		logger.Info("💰 持仓分析",
+			"entry", s.lastTradePrice.String(),
+			"current", currentPrice.String(),
+			"pnl%", pnlPercent.Mul(decimal.NewFromInt(100)).String())
+	}
+
 	if pnlPercent.LessThanOrEqual(stopLossThreshold) {
+		reason := fmt.Sprintf("stop loss: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64())
+		logger.Info("🚨 触发止损", "reason", reason)
+
 		signals = append(signals, &strategy.Signal{
 			Type:      "SELL",
-			Reason:    fmt.Sprintf("stop loss: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
+			Reason:    reason,
 			Strength:  1.0,
 			Timestamp: kline.OpenTime.Unix() * 1000,
 		})
@@ -220,11 +306,16 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 			EntryPrice:   s.lastTradePrice,
 			CurrentPrice: currentPrice,
 			CurrentPnL:   pnlPercent,
-			HighestPrice: s.highestPriceSinceBuy, // 🔥 修复关键bug：提供最高价格
+			HighestPrice: s.highestPriceSinceBuy,
 		}
 
 		sellSignal := s.sellStrategy.ShouldSell(kline, tradeInfo)
+
 		if sellSignal.ShouldSell {
+			logger.Info("✅ 卖出触发",
+				"reason", sellSignal.Reason,
+				"strength", sellSignal.Strength)
+
 			signals = append(signals, &strategy.Signal{
 				Type:      "SELL",
 				Reason:    sellSignal.Reason,
@@ -238,9 +329,12 @@ func (s *BollingerBandsStrategy) checkStopConditions(kline *cex.KlineData, portf
 		// 3. 兜底：基础止盈检查
 		takeProfitThreshold := decimal.NewFromFloat(s.TakeProfitPercent)
 		if pnlPercent.GreaterThanOrEqual(takeProfitThreshold) {
+			reason := fmt.Sprintf("take profit: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64())
+			logger.Info("💎 触发基础止盈", "reason", reason)
+
 			signals = append(signals, &strategy.Signal{
 				Type:      "SELL",
-				Reason:    fmt.Sprintf("take profit: %.2f%%", pnlPercent.Mul(decimal.NewFromInt(100)).InexactFloat64()),
+				Reason:    reason,
 				Strength:  1.0,
 				Timestamp: kline.OpenTime.Unix() * 1000,
 			})

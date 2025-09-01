@@ -89,7 +89,9 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingEngine")
 
-	logger.Info("开始交易引擎", "symbol", e.tradingPair.String(), "timeframe", e.timeframe.String())
+	logger.Info("🚀 开始交易引擎",
+		"trading_symbol", e.tradingPair.String(),
+		"timeframe", e.timeframe.String())
 
 	e.isRunning = true
 	defer func() { e.isRunning = false }()
@@ -152,17 +154,36 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 			portfolio.Timestamp = kline.OpenTime
 
 			// 3️⃣ 执行策略分析
+			// 简化策略分析日志：只在关键节点打印
+			if klineCount%10 == 1 || klineCount <= 5 {
+				logger.Info("🧠 策略分析",
+					"index", klineCount,
+					"time", kline.OpenTime.Format("15:04"),
+					"price", kline.Close.String())
+			}
+
 			signals, err := e.strategy.OnData(ctx, kline, portfolio)
 			if err != nil {
-				logger.Error("策略执行失败", "error", err)
+				logger.Error("❌ 策略执行失败", "error", err)
 				continue
 			}
 
+			// 只在有信号时打印结果
+			if len(signals) > 0 {
+				logger.Info("📊 策略完成", "signals", len(signals))
+			}
+
 			// 4️⃣ 处理交易信号（生成新挂单）
-			for _, signal := range signals {
+			for i, signal := range signals {
+				logger.Info("🎯 处理交易信号",
+					"signal_index", i+1,
+					"signal_type", signal.Type,
+					"signal_strength", signal.Strength,
+					"signal_reason", signal.Reason)
+
 				err := e.processSignal(ctx, signal, kline, portfolio)
 				if err != nil {
-					logger.Error("处理交易信号失败", "error", err)
+					logger.Error("❌ 处理交易信号失败", "error", err)
 				}
 			}
 

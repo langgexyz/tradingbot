@@ -60,8 +60,8 @@ func RegisterBollingerCmd() {
 		args.Bool(&dry, "dry", "run in dry run mode (live data but no real orders)")
 
 		// 回测参数
-		args.String(&startDate, "start", "backtest start date (YYYY-MM-DD, e.g., 2024-01-01) - required for backtest")
-		args.String(&endDate, "end", "backtest end date (YYYY-MM-DD, e.g., 2024-08-30)")
+		args.String(&startDate, "start", "backtest start date (YYYY-MM-DD HH:MM:SS or YYYY-MM-DD, e.g., 2024-01-01 14:30:00) - required for backtest")
+		args.String(&endDate, "end", "backtest end date (YYYY-MM-DD HH:MM:SS or YYYY-MM-DD, e.g., 2024-08-30)")
 		args.Float64(&initialCapital, "capital", "initial capital (default: 10000.0)")
 
 		// 策略参数
@@ -148,13 +148,14 @@ func RegisterBollingerCmd() {
 			os.Exit(1)
 		}
 
-		// 回测模式需要开始日期
+		// 回测模式需要开始日期（但实时dry run不需要）
 		if !live && !dry && startDate == "" {
 			fmt.Printf("❌ Error: start date is required for backtest mode\n")
 			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
 			fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
 			fmt.Printf("🔴 For live trading: ./bin/tradingbot bollinger -base PEPE -quote USDT --live\n")
-			fmt.Printf("📝 For dry run: ./bin/tradingbot bollinger -base PEPE -quote USDT --dry\n")
+			fmt.Printf("📝 For dry run (real-time): ./bin/tradingbot bollinger -base PEPE -quote USDT --dry\n")
+			fmt.Printf("📝 For dry run (historical): ./bin/tradingbot bollinger -base PEPE -quote USDT --dry -start 2024-01-01\n")
 			os.Exit(1)
 		}
 
@@ -169,9 +170,9 @@ func RegisterBollingerCmd() {
 			initialCapital = 10000.0 // 默认初始资金
 		}
 
-		// 如果没有设置endDate，使用当前时间（只对回测模式）
-		if !live && !dry && endDate == "" {
-			endDate = time.Now().Format("2006-01-02")
+		// 如果没有设置endDate，使用当前时间（回测模式或有start参数的dry模式）
+		if !live && endDate == "" && startDate != "" {
+			endDate = time.Now().Format("2006-01-02 15:04:05")
 		}
 
 		// 解析卖出策略参数
@@ -199,10 +200,13 @@ func RegisterBollingerCmd() {
 		}
 
 		// 根据模式运行
-		if live || dry {
+		if live || (dry && startDate == "") {
+			// 实时模式：真实交易或实时Dry Run
 			err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams, dry)
 		} else {
-			err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
+			// 回测模式：历史数据回测或Dry Run回测
+			isDryBacktest := dry && startDate != ""
+			err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams, isDryBacktest)
 		}
 
 		if err != nil {
@@ -213,8 +217,12 @@ func RegisterBollingerCmd() {
 }
 
 // runBollingerBacktestWithPair 运行布林道回测系统
-func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, startDate, endDate string, initialCapital float64, strategyParams *strategy.BollingerBandsParams) error {
-	fmt.Println("🤖 Bollinger Bands Trading System")
+func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, startDate, endDate string, initialCapital float64, strategyParams *strategy.BollingerBandsParams, isDryBacktest bool) error {
+	if isDryBacktest {
+		fmt.Println("🤖 Bollinger Bands Dry Run System (Historical Data)")
+	} else {
+		fmt.Println("🤖 Bollinger Bands Trading System")
+	}
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Printf("📊 Trading Pair: %s/%s\n", base, quote)
 	fmt.Printf("⏰ Timeframe: %s\n", timeframe)
@@ -246,7 +254,12 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 	}()
 
 	// 运行回测
-	fmt.Printf("📊 Running in backtest mode from %s to %s...\n", startDate, endDate)
+	if isDryBacktest {
+		fmt.Printf("🧪 Running in dry run mode (historical data) from %s to %s...\n", startDate, endDate)
+		fmt.Println("💡 Using historical data with simulated orders")
+	} else {
+		fmt.Printf("📊 Running in backtest mode from %s to %s...\n", startDate, endDate)
+	}
 	fmt.Printf("💰 Initial Capital: $%.2f\n", initialCapital)
 
 	// 运行回测

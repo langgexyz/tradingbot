@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"tradingbot/src/cex"
+
+	"github.com/xpwu/go-log/log"
 )
 
 // DataFeed 统一的数据喂入接口
@@ -110,6 +112,8 @@ func (f *LiveDataFeed) Start(ctx context.Context) error {
 }
 
 func (f *LiveDataFeed) GetNext(ctx context.Context) (*cex.KlineData, error) {
+	ctx, logger := log.WithCtx(ctx)
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -117,17 +121,27 @@ func (f *LiveDataFeed) GetNext(ctx context.Context) (*cex.KlineData, error) {
 		return nil, nil // 数据流结束
 	case <-f.ticker.C:
 		f.currentTime = time.Now()
+		logger.Info("📡 LiveDataFeed开始获取数据",
+			"trading_pair", f.tradingPair.String(),
+			"interval", f.interval,
+			"current_time", f.currentTime.Format("15:04:05"))
 
 		// 获取最新K线数据
 		klines, err := f.cexClient.GetKlines(ctx, f.tradingPair, f.interval, 1)
 		if err != nil {
+			logger.Error("❌ 获取K线数据失败", "error", err)
 			return nil, err
 		}
 
 		if len(klines) == 0 {
+			logger.Info("⚠️ 没有获取到K线数据")
 			return nil, nil
 		}
 
+		logger.Info("✅ 成功获取K线数据",
+			"klines_count", len(klines),
+			"kline_open_time", klines[0].OpenTime.Format("15:04:05"),
+			"close_price", klines[0].Close.String())
 		return klines[0], nil
 	}
 }
