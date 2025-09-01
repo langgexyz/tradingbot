@@ -148,8 +148,7 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 				continue
 			}
 
-			// 更新当前价格和时间
-			portfolio.CurrentPrice = kline.Close
+			// 更新时间
 			portfolio.Timestamp = kline.OpenTime
 
 			// 3️⃣ 执行策略分析

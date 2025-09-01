@@ -110,12 +110,9 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 
 	// 创建回测执行器
 	initialCapitalDecimal := decimal.NewFromFloat(initialCapital)
-	orderExecutor := executor.NewBacktestOrderExecutor(pair)
-	backtestExecutor := executor.NewUnifiedExecutor(pair, initialCapitalDecimal, orderExecutor)
-
-	// 设置手续费（从CEX客户端获取）
-	fee := ts.cexClient.GetTradingFee()
-	backtestExecutor.SetCommission(fee)
+	orderStrategy := executor.NewBacktestOrderStrategy(pair)
+	backtestExecutor := executor.NewTradingExecutor(pair, initialCapitalDecimal)
+	backtestExecutor.SetOrderStrategy(orderStrategy)
 
 	// 获取时间周期
 	timeframe, err := timeframes.ParseTimeframe(TradingConfigValue.Timeframe)
@@ -221,14 +218,13 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 	}
 
 	return &BacktestStatistics{
-		InitialCapital:  stats["initial_capital"].(decimal.Decimal),
-		FinalPortfolio:  stats["final_portfolio"].(decimal.Decimal),
-		TotalReturn:     stats["total_return"].(decimal.Decimal),
-		TotalTrades:     stats["total_trades"].(int),
-		WinningTrades:   stats["winning_trades"].(int),
-		LosingTrades:    stats["losing_trades"].(int),
-		TotalCommission: stats["total_commission"].(decimal.Decimal),
-		Orders:          orders,
+		InitialCapital: stats["initial_capital"].(decimal.Decimal),
+		FinalPortfolio: stats["final_portfolio"].(decimal.Decimal),
+		TotalReturn:    stats["total_return"].(decimal.Decimal),
+		TotalTrades:    stats["total_trades"].(int),
+		WinningTrades:  stats["winning_trades"].(int),
+		LosingTrades:   stats["losing_trades"].(int),
+		Orders:         orders,
 
 		// 新增的详细分析
 		Trades:         trades,
@@ -256,7 +252,7 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 }
 
 // RunLiveTradingWithParams 使用指定策略参数运行实时交易
-func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategyParams strategy.StrategyParams) error {
+func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategyParams strategy.StrategyParams, dryRun bool) error {
 	// 测试 CEX 连接
 	err := ts.cexClient.Ping(ts.ctx)
 	if err != nil {
@@ -294,11 +290,22 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 	}
 	fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
 
-	// 创建实盘执行器
-	orderExecutor := executor.NewLiveOrderExecutor(ts.cexClient, pair)
+	// 创建执行器（根据是否为Dry Run选择不同类型）
+	var orderStrategy executor.OrderStrategy
+	if dryRun {
+		// Dry Run模式：使用回测订单策略（不真实下单）
+		fmt.Println("🧪 Dry Run Mode: Real-time data, simulated orders")
+		orderStrategy = executor.NewBacktestOrderStrategy(pair)
+	} else {
+		// 真实交易模式：使用实盘订单策略
+		fmt.Println("💰 Live Trading Mode: Real orders will be placed!")
+		orderStrategy = executor.NewLiveOrderStrategy(ts.cexClient, pair)
+	}
+
 	// 假设实盘交易也有初始资金（可以从账户获取真实余额）
 	initialCapitalDecimal := decimal.NewFromFloat(10000) // TODO: 从账户获取真实余额
-	liveExecutor := executor.NewUnifiedExecutor(pair, initialCapitalDecimal, orderExecutor)
+	liveExecutor := executor.NewTradingExecutor(pair, initialCapitalDecimal)
+	liveExecutor.SetOrderStrategy(orderStrategy)
 
 	// 获取时间周期
 	timeframe, err := timeframes.ParseTimeframe(TradingConfigValue.Timeframe)
@@ -360,14 +367,13 @@ type TradeAnalysis struct {
 
 // BacktestStatistics 回测统计结果
 type BacktestStatistics struct {
-	InitialCapital  decimal.Decimal        `json:"initial_capital"`
-	FinalPortfolio  decimal.Decimal        `json:"final_portfolio"`
-	TotalReturn     decimal.Decimal        `json:"total_return"`
-	TotalTrades     int                    `json:"total_trades"`
-	WinningTrades   int                    `json:"winning_trades"`
-	LosingTrades    int                    `json:"losing_trades"`
-	TotalCommission decimal.Decimal        `json:"total_commission"`
-	Orders          []executor.OrderResult `json:"orders"`
+	InitialCapital decimal.Decimal        `json:"initial_capital"`
+	FinalPortfolio decimal.Decimal        `json:"final_portfolio"`
+	TotalReturn    decimal.Decimal        `json:"total_return"`
+	TotalTrades    int                    `json:"total_trades"`
+	WinningTrades  int                    `json:"winning_trades"`
+	LosingTrades   int                    `json:"losing_trades"`
+	Orders         []executor.OrderResult `json:"orders"`
 
 	// 新增的详细分析
 	Trades         []TradeAnalysis `json:"trades"`
@@ -425,7 +431,6 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 
 	totalPnL := stats.FinalPortfolio.Sub(stats.InitialCapital)
 	fmt.Printf("Total P&L: $%.2f\n", totalPnL.InexactFloat64())
-	fmt.Printf("Total Commission: $%.2f\n", stats.TotalCommission.InexactFloat64())
 
 	// 显示最近的交易
 	if len(stats.Orders) > 0 {
@@ -711,16 +716,12 @@ func AnalyzeTrades(orders []executor.OrderResult) ([]TradeAnalysis, []TradeAnaly
 			pnl := sellValue.Sub(buyValue)
 			pnlPercent := pnl.Div(buyValue).Mul(decimal.NewFromInt(100))
 
-			// 计算手续费
-			commission := buyOrder.Commission.Add(order.Commission)
-
 			trade := TradeAnalysis{
 				BuyOrder:   buyOrder,
 				SellOrder:  &order,
 				Duration:   duration,
-				PnL:        pnl.Sub(commission),
+				PnL:        pnl,
 				PnLPercent: pnlPercent,
-				Commission: commission,
 				IsOpen:     false,
 				BuyReason:  "strategy signal", // 默认原因
 				SellReason: "strategy signal", // 默认原因
@@ -745,7 +746,6 @@ func AnalyzeTrades(orders []executor.OrderResult) ([]TradeAnalysis, []TradeAnaly
 			Duration:   0,
 			PnL:        decimal.Zero,
 			PnLPercent: decimal.Zero,
-			Commission: buyOrder.Commission,
 			IsOpen:     true,
 			BuyReason:  "strategy signal", // 默认原因
 			SellReason: "",
@@ -861,12 +861,12 @@ func CalculateDrawdownWithKlines(orders []executor.OrderResult, klines []*cex.Kl
 
 			if order.Side == executor.OrderSideBuy {
 				// 买入：现金减少，记录持仓
-				currentCash = currentCash.Sub(order.Price.Mul(order.Quantity)).Sub(order.Commission)
+				currentCash = currentCash.Sub(order.Price.Mul(order.Quantity))
 				currentPositions = append(currentPositions, order)
 			} else if order.Side == executor.OrderSideSell && len(currentPositions) > 0 {
 				// 卖出：现金增加，移除第一个持仓（FIFO）
 				sellValue := order.Price.Mul(order.Quantity)
-				currentCash = currentCash.Add(sellValue).Sub(order.Commission)
+				currentCash = currentCash.Add(sellValue)
 
 				// 移除对应的买入订单（简化处理：FIFO）
 				if len(currentPositions) > 0 {

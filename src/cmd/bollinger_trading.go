@@ -30,6 +30,7 @@ func RegisterBollingerCmd() {
 	var timeframe string
 	var cex string
 	var live bool // 是否实盘交易
+	var dry bool  // 是否Dry Run模式（实时运行但不真实下单）
 
 	var startDate string
 	var endDate string
@@ -56,6 +57,7 @@ func RegisterBollingerCmd() {
 		args.String(&timeframe, "t", "timeframe (e.g., 1h, 4h, 1d)")
 		args.String(&cex, "cex", "centralized exchange (default: binance, currently only supports: binance)")
 		args.Bool(&live, "live", "run in live trading mode (default: false, backtest mode)")
+		args.Bool(&dry, "dry", "run in dry run mode (live data but no real orders)")
 
 		// 回测参数
 		args.String(&startDate, "start", "backtest start date (YYYY-MM-DD, e.g., 2024-01-01) - required for backtest")
@@ -147,11 +149,12 @@ func RegisterBollingerCmd() {
 		}
 
 		// 回测模式需要开始日期
-		if !live && startDate == "" {
+		if !live && !dry && startDate == "" {
 			fmt.Printf("❌ Error: start date is required for backtest mode\n")
 			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
 			fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
 			fmt.Printf("🔴 For live trading: ./bin/tradingbot bollinger -base PEPE -quote USDT --live\n")
+			fmt.Printf("📝 For dry run: ./bin/tradingbot bollinger -base PEPE -quote USDT --dry\n")
 			os.Exit(1)
 		}
 
@@ -166,8 +169,8 @@ func RegisterBollingerCmd() {
 			initialCapital = 10000.0 // 默认初始资金
 		}
 
-		// 如果没有设置endDate，使用当前时间
-		if !live && endDate == "" {
+		// 如果没有设置endDate，使用当前时间（只对回测模式）
+		if !live && !dry && endDate == "" {
 			endDate = time.Now().Format("2006-01-02")
 		}
 
@@ -196,8 +199,8 @@ func RegisterBollingerCmd() {
 		}
 
 		// 根据模式运行
-		if live {
-			err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams)
+		if live || dry {
+			err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams, dry)
 		} else {
 			err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
 		}
@@ -259,7 +262,7 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 }
 
 // runBollingerLiveWithPair 运行布林道实盘交易
-func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, initialCapital float64, strategyParams *strategy.BollingerBandsParams) error {
+func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, initialCapital float64, strategyParams *strategy.BollingerBandsParams, dryRun bool) error {
 	fmt.Println("🤖 Bollinger Bands Live Trading System")
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Printf("📊 Trading Pair: %s/%s\n", base, quote)
@@ -293,13 +296,18 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 		os.Exit(0)
 	}()
 
-	// 运行实盘交易
-	fmt.Println("🔴 Live trading mode")
-	fmt.Println("⚠️  WARNING: This will use real money!")
+	// 显示模式信息
+	if dryRun {
+		fmt.Println("🧪 Dry Run mode")
+		fmt.Println("💡 Using real-time data with simulated orders")
+	} else {
+		fmt.Println("🔴 Live trading mode")
+		fmt.Println("⚠️  WARNING: This will use real money!")
+	}
 	fmt.Println("Press Ctrl+C to stop...")
 
 	// 运行实盘交易
-	err = tradingSystem.RunLiveTradingWithParams(pair, strategyParams)
+	err = tradingSystem.RunLiveTradingWithParams(pair, strategyParams, dryRun)
 	if err != nil {
 		return fmt.Errorf("live trading failed: %w", err)
 	}

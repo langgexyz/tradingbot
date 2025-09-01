@@ -11,20 +11,20 @@ import (
 	"github.com/xpwu/go-log/log"
 )
 
-// BacktestOrderExecutor 回测订单执行器：只在本地数据库记录
-type BacktestOrderExecutor struct {
+// BacktestOrderStrategy 回测订单策略：只在本地数据库记录
+type BacktestOrderStrategy struct {
 	tradingPair cex.TradingPair
 }
 
-// NewBacktestOrderExecutor 创建回测订单执行器
-func NewBacktestOrderExecutor(pair cex.TradingPair) *BacktestOrderExecutor {
-	return &BacktestOrderExecutor{
+// NewBacktestOrderStrategy 创建回测订单策略
+func NewBacktestOrderStrategy(pair cex.TradingPair) *BacktestOrderStrategy {
+	return &BacktestOrderStrategy{
 		tradingPair: pair,
 	}
 }
 
 // ExecuteBuy 执行买入订单（模拟）
-func (e *BacktestOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
+func (e *BacktestOrderStrategy) ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
 	// 回测模式：只需要生成订单记录，无真实API调用
 	result := &OrderResult{
 		OrderID:     fmt.Sprintf("backtest_%d", time.Now().UnixNano()),
@@ -55,7 +55,7 @@ func (e *BacktestOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder)
 }
 
 // ExecuteSell 执行卖出订单（模拟）
-func (e *BacktestOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
+func (e *BacktestOrderStrategy) ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
 	// 回测模式：只需要生成订单记录，无真实API调用
 	result := &OrderResult{
 		OrderID:     fmt.Sprintf("backtest_%d", time.Now().UnixNano()),
@@ -86,27 +86,27 @@ func (e *BacktestOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrde
 }
 
 // GetRealPortfolio 获取真实投资组合（回测模式返回nil）
-func (e *BacktestOrderExecutor) GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error) {
-	// 回测模式不需要从外部获取，返回nil让UnifiedExecutor使用本地状态
+func (e *BacktestOrderStrategy) GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error) {
+	// 回测模式不需要从外部获取，返回nil让TradingExecutor使用本地状态
 	return nil, nil
 }
 
-// LiveOrderExecutor 实盘订单执行器：本地数据库记录 + CEX API调用
-type LiveOrderExecutor struct {
+// LiveOrderStrategy 实盘订单策略：本地数据库记录 + CEX API调用
+type LiveOrderStrategy struct {
 	cexClient   cex.CEXClient
 	tradingPair cex.TradingPair
 }
 
-// NewLiveOrderExecutor 创建实盘订单执行器
-func NewLiveOrderExecutor(cexClient cex.CEXClient, pair cex.TradingPair) *LiveOrderExecutor {
-	return &LiveOrderExecutor{
+// NewLiveOrderStrategy 创建实盘订单策略
+func NewLiveOrderStrategy(cexClient cex.CEXClient, pair cex.TradingPair) *LiveOrderStrategy {
+	return &LiveOrderStrategy{
 		cexClient:   cexClient,
 		tradingPair: pair,
 	}
 }
 
 // validateTradingEnabled 验证交易是否启用
-func (e *LiveOrderExecutor) validateTradingEnabled(ctx context.Context) error {
+func (e *LiveOrderStrategy) validateTradingEnabled(ctx context.Context) error {
 	ctx, logger := log.WithCtx(ctx)
 
 	// 测试连接
@@ -124,7 +124,7 @@ func (e *LiveOrderExecutor) validateTradingEnabled(ctx context.Context) error {
 }
 
 // ExecuteBuy 执行买入订单（真实交易）
-func (e *LiveOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
+func (e *LiveOrderStrategy) ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("LiveOrderExecutor")
 
@@ -166,7 +166,6 @@ func (e *LiveOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder) (*O
 		Price:       cexResult.Price,
 		Timestamp:   cexResult.TransactTime,
 		Success:     true,
-		Commission:  calculateCommission(cexResult.Price, cexResult.Quantity, e.cexClient.GetTradingFee()),
 	}
 
 	// TODO: 保存到本地数据库
@@ -180,7 +179,6 @@ func (e *LiveOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder) (*O
 		"quantity", result.Quantity.String(),
 		"price", result.Price.String(),
 		"notional", result.Quantity.Mul(result.Price).String(),
-		"commission", result.Commission.String(),
 		"timestamp", result.Timestamp.Format("2006-01-02T15:04:05Z"),
 		"reason", order.Reason,
 		"cex_order_id", cexResult.OrderID)
@@ -194,7 +192,7 @@ func (e *LiveOrderExecutor) ExecuteBuy(ctx context.Context, order *BuyOrder) (*O
 }
 
 // ExecuteSell 执行卖出订单（真实交易）
-func (e *LiveOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
+func (e *LiveOrderStrategy) ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("LiveOrderExecutor")
 
@@ -236,7 +234,6 @@ func (e *LiveOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrder) (
 		Price:       cexResult.Price,
 		Timestamp:   cexResult.TransactTime,
 		Success:     true,
-		Commission:  calculateCommission(cexResult.Price, cexResult.Quantity, e.cexClient.GetTradingFee()),
 	}
 
 	// TODO: 保存到本地数据库
@@ -250,7 +247,6 @@ func (e *LiveOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrder) (
 		"quantity", result.Quantity.String(),
 		"price", result.Price.String(),
 		"notional", result.Quantity.Mul(result.Price).String(),
-		"commission", result.Commission.String(),
 		"timestamp", result.Timestamp.Format("2006-01-02T15:04:05Z"),
 		"reason", order.Reason,
 		"cex_order_id", cexResult.OrderID)
@@ -264,9 +260,9 @@ func (e *LiveOrderExecutor) ExecuteSell(ctx context.Context, order *SellOrder) (
 }
 
 // GetRealPortfolio 获取真实投资组合状态（从CEX）
-func (e *LiveOrderExecutor) GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error) {
+func (e *LiveOrderStrategy) GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error) {
 	ctx, logger := log.WithCtx(ctx)
-	logger.PushPrefix("LiveOrderExecutor")
+	logger.PushPrefix("LiveOrderStrategy")
 
 	// 获取账户余额信息
 	balances, err := e.cexClient.GetAccount(ctx)
@@ -287,41 +283,14 @@ func (e *LiveOrderExecutor) GetRealPortfolio(ctx context.Context, pair cex.Tradi
 		}
 	}
 
-	// 获取当前市场价格（使用最新K线）
-	klines, err := e.cexClient.GetKlines(ctx, pair, "1m", 1)
-	if err != nil {
-		logger.Error(fmt.Sprintf("获取当前价格失败: %v", err))
-		return nil, fmt.Errorf("failed to get current price: %w", err)
-	}
-
-	var currentPrice decimal.Decimal
-	if len(klines) > 0 {
-		currentPrice = klines[0].Close
-	} else {
-		return nil, fmt.Errorf("no price data available")
-	}
-
-	// 计算投资组合总价值 = 计价资产余额 + (基础资产余额 × 当前价格)
-	baseValue := baseBalance.Mul(currentPrice)
-	totalPortfolio := quoteBalance.Add(baseValue)
-
-	logger.Info(fmt.Sprintf("真实投资组合状态: %s余额=%s, %s余额=%s, 当前价格=%s, 总价值=%s",
+	logger.Info(fmt.Sprintf("真实账户余额: %s=%s, %s=%s",
 		pair.Base, baseBalance.String(),
-		pair.Quote, quoteBalance.String(),
-		currentPrice.String(),
-		totalPortfolio.String()))
+		pair.Quote, quoteBalance.String()))
 
 	return &Portfolio{
-		Cash:         quoteBalance,   // 计价资产作为现金
-		Position:     baseBalance,    // 基础资产作为持仓
-		CurrentPrice: currentPrice,   // 当前市场价格
-		Portfolio:    totalPortfolio, // 总投资组合价值
-		Timestamp:    time.Now(),
+		Cash:      quoteBalance, // 计价资产作为现金
+		Position:  baseBalance,  // 基础资产作为持仓
+		Portfolio: decimal.Zero, // 不计算总价值，保持简单
+		Timestamp: time.Now(),
 	}, nil
-}
-
-// calculateCommission 计算手续费
-func calculateCommission(price, quantity decimal.Decimal, feeRate float64) decimal.Decimal {
-	notional := price.Mul(quantity)
-	return notional.Mul(decimal.NewFromFloat(feeRate))
 }

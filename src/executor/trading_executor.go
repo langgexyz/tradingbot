@@ -11,19 +11,11 @@ import (
 	"github.com/xpwu/go-log/log"
 )
 
-// OrderExecutor 订单执行接口：处理回测vs实盘的下单差异
-type OrderExecutor interface {
-	ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error)
-	ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error)
-	GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error)
-}
-
-// UnifiedExecutor 统一执行器：包含所有业务逻辑
-type UnifiedExecutor struct {
+// TradingExecutor 交易执行器：包含所有交易业务逻辑
+type TradingExecutor struct {
 	tradingPair    cex.TradingPair
 	initialCapital decimal.Decimal
-	commission     decimal.Decimal
-	orderExecutor  OrderExecutor
+	orderStrategy  OrderStrategy
 
 	// 本地状态管理（回测和实盘都需要）
 	cash      decimal.Decimal
@@ -31,20 +23,17 @@ type UnifiedExecutor struct {
 	portfolio decimal.Decimal
 
 	// 交易记录和统计（回测和实盘都需要）
-	orders          []OrderResult
-	totalTrades     int
-	winningTrades   int
-	losingTrades    int
-	totalCommission decimal.Decimal
+	orders        []OrderResult
+	totalTrades   int
+	winningTrades int
+	losingTrades  int
 }
 
-// NewUnifiedExecutor 创建统一执行器
-func NewUnifiedExecutor(pair cex.TradingPair, initialCapital decimal.Decimal, orderExecutor OrderExecutor) *UnifiedExecutor {
-	return &UnifiedExecutor{
+// NewTradingExecutor 创建交易执行器
+func NewTradingExecutor(pair cex.TradingPair, initialCapital decimal.Decimal) *TradingExecutor {
+	return &TradingExecutor{
 		tradingPair:    pair,
 		initialCapital: initialCapital,
-		commission:     decimal.NewFromFloat(0.001), // 默认0.1%手续费
-		orderExecutor:  orderExecutor,
 		cash:           initialCapital,
 		position:       decimal.Zero,
 		portfolio:      initialCapital,
@@ -52,15 +41,15 @@ func NewUnifiedExecutor(pair cex.TradingPair, initialCapital decimal.Decimal, or
 	}
 }
 
-// SetCommission 设置手续费率
-func (e *UnifiedExecutor) SetCommission(commission float64) {
-	e.commission = decimal.NewFromFloat(commission)
+// SetOrderStrategy 设置订单策略（回测或实盘）
+func (e *TradingExecutor) SetOrderStrategy(strategy OrderStrategy) {
+	e.orderStrategy = strategy
 }
 
 // Buy 执行买入订单（统一业务逻辑）
-func (e *UnifiedExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
+func (e *TradingExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResult, error) {
 	ctx, logger := log.WithCtx(ctx)
-	logger.PushPrefix("UnifiedExecutor")
+	logger.PushPrefix("TradingExecutor")
 
 	logger.Info(fmt.Sprintf("执行买入订单: quantity=%s, price=%s, reason=%s",
 		order.Quantity.String(),
@@ -70,12 +59,10 @@ func (e *UnifiedExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResul
 	// 1. 业务逻辑检查（回测和实盘都需要）
 	executionPrice := order.Price
 	notional := order.Quantity.Mul(executionPrice)
-	commission := notional.Mul(e.commission)
-	totalCost := notional.Add(commission)
 
 	// 资金充足性检查
-	if e.cash.LessThan(totalCost) {
-		logger.Error("资金不足", "required", totalCost.String(), "available", e.cash.String())
+	if e.cash.LessThan(notional) {
+		logger.Error("资金不足", "required", notional.String(), "available", e.cash.String())
 		return &OrderResult{
 			OrderID:     fmt.Sprintf("failed_%d", time.Now().UnixNano()),
 			TradingPair: order.TradingPair,
@@ -85,28 +72,25 @@ func (e *UnifiedExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResul
 			Timestamp:   order.Timestamp,
 			Success:     false,
 			Error:       "insufficient cash",
-		}, fmt.Errorf("insufficient cash: required %s, available %s", totalCost.String(), e.cash.String())
+		}, fmt.Errorf("insufficient cash: required %s, available %s", notional.String(), e.cash.String())
 	}
 
-	// 2. 委托给具体的订单执行器（差异化处理）
-	result, err := e.orderExecutor.ExecuteBuy(ctx, order)
+	// 2. 委托给具体的订单策略（差异化处理）
+	result, err := e.orderStrategy.ExecuteBuy(ctx, order)
 	if err != nil {
 		return result, err
 	}
 
 	// 3. 更新本地状态（回测和实盘都需要）
-	e.cash = e.cash.Sub(totalCost)
+	e.cash = e.cash.Sub(notional)
 	e.position = e.position.Add(order.Quantity)
-	result.Commission = commission
 
 	// 4. 记录订单和统计（回测和实盘都需要）
 	e.orders = append(e.orders, *result)
-	e.totalCommission = e.totalCommission.Add(commission)
 
-	logger.Info(fmt.Sprintf("买入成功: quantity=%s, price=%s, commission=%s, remaining_cash=%s, position=%s",
+	logger.Info(fmt.Sprintf("买入成功: quantity=%s, price=%s, remaining_cash=%s, position=%s",
 		order.Quantity.String(),
 		executionPrice.String(),
-		commission.String(),
 		e.cash.String(),
 		e.position.String()))
 
@@ -114,9 +98,9 @@ func (e *UnifiedExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResul
 }
 
 // Sell 执行卖出订单（统一业务逻辑）
-func (e *UnifiedExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
+func (e *TradingExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderResult, error) {
 	ctx, logger := log.WithCtx(ctx)
-	logger.PushPrefix("UnifiedExecutor")
+	logger.PushPrefix("TradingExecutor")
 
 	logger.Info(fmt.Sprintf("执行卖出订单: quantity=%s, price=%s, reason=%s",
 		order.Quantity.String(),
@@ -138,8 +122,8 @@ func (e *UnifiedExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 		}, fmt.Errorf("insufficient position: required %s, available %s", order.Quantity.String(), e.position.String())
 	}
 
-	// 2. 委托给具体的订单执行器（差异化处理）
-	result, err := e.orderExecutor.ExecuteSell(ctx, order)
+	// 2. 委托给具体的订单策略（差异化处理）
+	result, err := e.orderStrategy.ExecuteSell(ctx, order)
 	if err != nil {
 		return result, err
 	}
@@ -147,11 +131,9 @@ func (e *UnifiedExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 	// 3. 更新本地状态（回测和实盘都需要）
 	executionPrice := result.Price
 	notional := order.Quantity.Mul(executionPrice)
-	commission := notional.Mul(e.commission)
 
-	e.cash = e.cash.Add(notional.Sub(commission))
+	e.cash = e.cash.Add(notional)
 	e.position = e.position.Sub(order.Quantity)
-	result.Commission = commission
 
 	// 4. 计算盈亏和统计（回测和实盘都需要）
 	if len(e.orders) > 0 {
@@ -183,12 +165,10 @@ func (e *UnifiedExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 
 	// 6. 记录订单
 	e.orders = append(e.orders, *result)
-	e.totalCommission = e.totalCommission.Add(commission)
 
-	logger.Info(fmt.Sprintf("卖出成功: quantity=%s, price=%s, commission=%s, cash=%s, position=%s",
+	logger.Info(fmt.Sprintf("卖出成功: quantity=%s, price=%s, cash=%s, position=%s",
 		order.Quantity.String(),
 		executionPrice.String(),
-		commission.String(),
 		e.cash.String(),
 		e.position.String()))
 
@@ -196,7 +176,7 @@ func (e *UnifiedExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 }
 
 // GetPortfolio 获取当前投资组合状态
-func (e *UnifiedExecutor) GetPortfolio(ctx context.Context) (*Portfolio, error) {
+func (e *TradingExecutor) GetPortfolio(ctx context.Context) (*Portfolio, error) {
 	// 对于实盘交易，可以选择返回本地状态或从CEX获取实时状态
 	// 这里先返回本地维护的状态，保持一致性
 	return &Portfolio{
@@ -208,36 +188,35 @@ func (e *UnifiedExecutor) GetPortfolio(ctx context.Context) (*Portfolio, error) 
 }
 
 // GetOrders 获取所有订单记录
-func (e *UnifiedExecutor) GetOrders() []OrderResult {
+func (e *TradingExecutor) GetOrders() []OrderResult {
 	return e.orders
 }
 
 // GetStatistics 获取交易统计
-func (e *UnifiedExecutor) GetStatistics() map[string]interface{} {
+func (e *TradingExecutor) GetStatistics() map[string]interface{} {
 	totalReturn := decimal.Zero
 	if !e.initialCapital.IsZero() {
 		totalReturn = e.portfolio.Sub(e.initialCapital).Div(e.initialCapital)
 	}
 
 	return map[string]interface{}{
-		"initial_capital":  e.initialCapital,
-		"final_portfolio":  e.portfolio,
-		"total_return":     totalReturn,
-		"total_trades":     e.totalTrades,
-		"winning_trades":   e.winningTrades,
-		"losing_trades":    e.losingTrades,
-		"total_commission": e.totalCommission,
-		"cash":             e.cash,
-		"position":         e.position,
+		"initial_capital": e.initialCapital,
+		"final_portfolio": e.portfolio,
+		"total_return":    totalReturn,
+		"total_trades":    e.totalTrades,
+		"winning_trades":  e.winningTrades,
+		"losing_trades":   e.losingTrades,
+		"cash":            e.cash,
+		"position":        e.position,
 	}
 }
 
 // GetName 获取执行器名称
-func (e *UnifiedExecutor) GetName() string {
-	return "UnifiedExecutor"
+func (e *TradingExecutor) GetName() string {
+	return "TradingExecutor"
 }
 
 // Close 关闭执行器
-func (e *UnifiedExecutor) Close() error {
+func (e *TradingExecutor) Close() error {
 	return nil
 }

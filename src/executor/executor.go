@@ -53,8 +53,7 @@ type OrderResult struct {
 	TradingPair cex.TradingPair `json:"trading_pair"`
 	Side        OrderSide       `json:"side"`
 	Quantity    decimal.Decimal `json:"quantity"`
-	Price       decimal.Decimal `json:"price"`      // 实际成交价格
-	Commission  decimal.Decimal `json:"commission"` // 手续费
+	Price       decimal.Decimal `json:"price"` // 实际成交价格
 	Timestamp   time.Time       `json:"timestamp"`
 	Success     bool            `json:"success"`
 	Error       string          `json:"error,omitempty"`
@@ -62,14 +61,13 @@ type OrderResult struct {
 
 // Portfolio 投资组合状态
 type Portfolio struct {
-	Cash         decimal.Decimal `json:"cash"`          // 现金余额
-	Position     decimal.Decimal `json:"position"`      // 持仓数量
-	CurrentPrice decimal.Decimal `json:"current_price"` // 当前价格
-	Portfolio    decimal.Decimal `json:"portfolio"`     // 总资产价值
-	Timestamp    time.Time       `json:"timestamp"`
+	Cash      decimal.Decimal `json:"cash"`      // 现金余额（计价资产）
+	Position  decimal.Decimal `json:"position"`  // 持仓数量（基础资产）
+	Portfolio decimal.Decimal `json:"portfolio"` // 总资产价值（可选）
+	Timestamp time.Time       `json:"timestamp"`
 }
 
-// Executor 交易执行器接口
+// Executor 交易执行器接口（面向策略层）
 type Executor interface {
 	// Buy 执行买入订单
 	Buy(ctx context.Context, order *BuyOrder) (*OrderResult, error)
@@ -85,4 +83,16 @@ type Executor interface {
 
 	// Close 关闭执行器，清理资源
 	Close() error
+}
+
+// OrderStrategy 订单策略接口（处理回测vs实盘的下单差异）
+type OrderStrategy interface {
+	// ExecuteBuy 执行买入订单（具体实现：模拟或真实）
+	ExecuteBuy(ctx context.Context, order *BuyOrder) (*OrderResult, error)
+
+	// ExecuteSell 执行卖出订单（具体实现：模拟或真实）
+	ExecuteSell(ctx context.Context, order *SellOrder) (*OrderResult, error)
+
+	// GetRealPortfolio 获取真实投资组合（实盘模式用）
+	GetRealPortfolio(ctx context.Context, pair cex.TradingPair) (*Portfolio, error)
 }

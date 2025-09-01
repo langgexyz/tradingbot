@@ -12,16 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUnifiedExecutor_WithBacktestOrderExecutor 测试统一执行器与回测订单执行器
-func TestUnifiedExecutor_WithBacktestOrderExecutor(t *testing.T) {
+// TestTradingExecutor_WithBacktestOrderStrategy 测试交易执行器与回测订单策略
+func TestTradingExecutor_WithBacktestOrderStrategy(t *testing.T) {
 	pair := cex.TradingPair{Base: "BTC", Quote: "USDT"}
 	initialCapital := decimal.NewFromFloat(10000)
 
-	// 创建回测订单执行器
-	orderExecutor := NewBacktestOrderExecutor(pair)
+	// 创建回测订单策略
+	orderStrategy := NewBacktestOrderStrategy(pair)
 
-	// 创建统一执行器
-	executor := NewUnifiedExecutor(pair, initialCapital, orderExecutor)
+	// 创建交易执行器
+	executor := NewTradingExecutor(pair, initialCapital)
+	executor.SetOrderStrategy(orderStrategy)
 
 	ctx := context.Background()
 
@@ -76,13 +77,14 @@ func TestUnifiedExecutor_WithBacktestOrderExecutor(t *testing.T) {
 	assert.Equal(t, 2, len(orders)) // 2个订单
 }
 
-// TestUnifiedExecutor_InsufficientCash 测试资金不足
-func TestUnifiedExecutor_InsufficientCash(t *testing.T) {
+// TestTradingExecutor_InsufficientCash 测试资金不足
+func TestTradingExecutor_InsufficientCash(t *testing.T) {
 	pair := cex.TradingPair{Base: "BTC", Quote: "USDT"}
 	initialCapital := decimal.NewFromFloat(1000) // 很少的资金
 
-	orderExecutor := NewBacktestOrderExecutor(pair)
-	executor := NewUnifiedExecutor(pair, initialCapital, orderExecutor)
+	orderStrategy := NewBacktestOrderStrategy(pair)
+	executor := NewTradingExecutor(pair, initialCapital)
+	executor.SetOrderStrategy(orderStrategy)
 
 	ctx := context.Background()
 
@@ -102,13 +104,14 @@ func TestUnifiedExecutor_InsufficientCash(t *testing.T) {
 	assert.False(t, result.Success)
 }
 
-// TestUnifiedExecutor_InsufficientPosition 测试持仓不足
-func TestUnifiedExecutor_InsufficientPosition(t *testing.T) {
+// TestTradingExecutor_InsufficientPosition 测试持仓不足
+func TestTradingExecutor_InsufficientPosition(t *testing.T) {
 	pair := cex.TradingPair{Base: "BTC", Quote: "USDT"}
 	initialCapital := decimal.NewFromFloat(10000)
 
-	orderExecutor := NewBacktestOrderExecutor(pair)
-	executor := NewUnifiedExecutor(pair, initialCapital, orderExecutor)
+	orderStrategy := NewBacktestOrderStrategy(pair)
+	executor := NewTradingExecutor(pair, initialCapital)
+	executor.SetOrderStrategy(orderStrategy)
 
 	ctx := context.Background()
 
@@ -128,13 +131,14 @@ func TestUnifiedExecutor_InsufficientPosition(t *testing.T) {
 	assert.False(t, result.Success)
 }
 
-// TestUnifiedExecutor_WinRateCalculation 测试胜率计算
-func TestUnifiedExecutor_WinRateCalculation(t *testing.T) {
+// TestTradingExecutor_WinRateCalculation 测试胜率计算
+func TestTradingExecutor_WinRateCalculation(t *testing.T) {
 	pair := cex.TradingPair{Base: "BTC", Quote: "USDT"}
 	initialCapital := decimal.NewFromFloat(100000)
 
-	orderExecutor := NewBacktestOrderExecutor(pair)
-	executor := NewUnifiedExecutor(pair, initialCapital, orderExecutor)
+	orderStrategy := NewBacktestOrderStrategy(pair)
+	executor := NewTradingExecutor(pair, initialCapital)
+	executor.SetOrderStrategy(orderStrategy)
 
 	ctx := context.Background()
 
