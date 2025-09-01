@@ -110,7 +110,8 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 
 	// 创建回测执行器
 	initialCapitalDecimal := decimal.NewFromFloat(initialCapital)
-	backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
+	orderExecutor := executor.NewBacktestOrderExecutor(pair)
+	backtestExecutor := executor.NewUnifiedExecutor(pair, initialCapitalDecimal, orderExecutor)
 
 	// 设置手续费（从CEX客户端获取）
 	fee := ts.cexClient.GetTradingFee()
@@ -294,7 +295,10 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 	fmt.Printf("✓ Initialized %s with params: %+v\n", strategyImpl.GetName(), strategyImpl.GetParams())
 
 	// 创建实盘执行器
-	liveExecutor := executor.NewLiveExecutor(ts.cexClient, pair)
+	orderExecutor := executor.NewLiveOrderExecutor(ts.cexClient, pair)
+	// 假设实盘交易也有初始资金（可以从账户获取真实余额）
+	initialCapitalDecimal := decimal.NewFromFloat(10000) // TODO: 从账户获取真实余额
+	liveExecutor := executor.NewUnifiedExecutor(pair, initialCapitalDecimal, orderExecutor)
 
 	// 获取时间周期
 	timeframe, err := timeframes.ParseTimeframe(TradingConfigValue.Timeframe)
@@ -413,7 +417,8 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 
 	fmt.Println("\n📊 TRADING STATISTICS")
 	fmt.Println("------------------------------")
-	fmt.Printf("Total Trades: %d\n", stats.TotalTrades)
+	fmt.Printf("Total Orders: %d\n", len(stats.Orders))
+	fmt.Printf("Completed Trade Pairs: %d\n", stats.TotalTrades)
 	fmt.Printf("Winning Trades: %d\n", stats.WinningTrades)
 	fmt.Printf("Losing Trades: %d\n", stats.LosingTrades)
 	fmt.Printf("Win Rate: %.2f%%\n", winRate.InexactFloat64())

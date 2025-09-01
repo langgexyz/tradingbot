@@ -282,9 +282,9 @@ func TestBacktestStatistics_Calculations(t *testing.T) {
 	stats := &BacktestStatistics{
 		InitialCapital:  initialCapital,
 		FinalPortfolio:  decimal.NewFromFloat(12000), // 20% 总收益
-		TotalTrades:     4,
-		WinningTrades:   3,
-		LosingTrades:    1,
+		TotalTrades:     1,                           // 修正：只有1个完整交易对
+		WinningTrades:   1,                           // 修正：1个盈利交易对
+		LosingTrades:    0,                           // 修正：0个亏损交易对
 		TotalCommission: decimal.NewFromFloat(50),
 		Orders: []executor.OrderResult{
 			{Side: executor.OrderSideBuy, Price: decimal.NewFromFloat(50000), Quantity: decimal.NewFromFloat(0.1), Commission: decimal.NewFromFloat(5), Timestamp: time.Now()},
@@ -307,10 +307,14 @@ func TestBacktestStatistics_Calculations(t *testing.T) {
 	// 验证统计数据的合理性
 	assert.Equal(t, initialCapital, stats.InitialCapital)
 	assert.True(t, stats.FinalPortfolio.GreaterThan(initialCapital)) // 盈利
-	assert.Equal(t, 4, stats.TotalTrades)
-	assert.Equal(t, 3, stats.WinningTrades)
-	assert.Equal(t, 1, stats.LosingTrades)
+	assert.Equal(t, 1, stats.TotalTrades)                            // 修正：1个完整交易对
+	assert.Equal(t, 1, stats.WinningTrades)                          // 修正：1个盈利交易对
+	assert.Equal(t, 0, stats.LosingTrades)                           // 修正：0个亏损交易对
 	assert.True(t, stats.TotalCommission.GreaterThan(decimal.Zero))
+
+	// 验证胜率计算：1/1 = 100%
+	winRate := float64(stats.WinningTrades) / float64(stats.TotalTrades) * 100
+	assert.Equal(t, 100.0, winRate)
 
 	// 验证回撤统计
 	assert.True(t, stats.PeakPortfolioValue.GreaterThanOrEqual(initialCapital))
