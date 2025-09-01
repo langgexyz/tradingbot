@@ -6,12 +6,43 @@ import (
 	"testing"
 	"time"
 
+	"tradingbot/src/cex"
 	"tradingbot/src/executor"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestError 已在 datafeed_test.go 中定义
+
+// CreateTestKlineWithPrices 创建指定价格的测试K线
+func CreateTestKlineWithPrices(openTime time.Time, open, high, low, close decimal.Decimal) *cex.KlineData {
+	return &cex.KlineData{
+		OpenTime:  openTime,
+		CloseTime: openTime.Add(4 * time.Hour),
+		Open:      open,
+		High:      high,
+		Low:       low,
+		Close:     close,
+		Volume:    decimal.NewFromInt(1000),
+	}
+}
+
+// CreateTestPendingOrder 创建测试挂单
+func CreateTestPendingOrder(orderType PendingOrderType, id string, price decimal.Decimal) *PendingOrder {
+	return &PendingOrder{
+		ID:           id,
+		Type:         orderType,
+		TradingPair:  cex.TradingPair{Base: "BTC", Quote: "USDT"},
+		Quantity:     decimal.NewFromInt(1),
+		Price:        price,
+		CreateTime:   time.Now(),
+		ExpireTime:   nil,
+		Reason:       "test order",
+		OriginSignal: "BUY",
+	}
+}
 
 // MockExecutor for testing
 type mockOrderExecutor struct {

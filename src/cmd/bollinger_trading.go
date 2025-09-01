@@ -19,17 +19,17 @@ import (
 
 // RegisterBollingerTradingCmd 注册布林道交易命令
 func RegisterBollingerTradingCmd() {
-	RegisterBollingerBacktestCmd()
-	RegisterBollingerLiveCmd()
+	RegisterBollingerCmd()
 }
 
-// RegisterBollingerBacktestCmd 注册布林道回测命令
-func RegisterBollingerBacktestCmd() {
+// RegisterBollingerCmd 注册统一的布林道交易命令
+func RegisterBollingerCmd() {
 	var configFile string
 	var base string
 	var quote string
 	var timeframe string
 	var cex string
+	var live bool // 是否实盘交易
 
 	var startDate string
 	var endDate string
@@ -49,15 +49,18 @@ func RegisterBollingerBacktestCmd() {
 	var sellStrategyParams string
 	var listSellStrategies bool
 
-	cmd.RegisterCmd("bollinger-backtest", "run Bollinger Bands backtest", func(args *arg.Arg) {
+	cmd.RegisterCmd("bollinger", "run Bollinger Bands trading (default: backtest)", func(args *arg.Arg) {
 		args.String(&configFile, "c", "config file path")
 		args.String(&base, "base", "base currency (e.g., BTC, ETH, PEPE, WIF)")
 		args.String(&quote, "quote", "quote currency (e.g., USDT, USDC, BTC)")
 		args.String(&timeframe, "t", "timeframe (e.g., 1h, 4h, 1d)")
 		args.String(&cex, "cex", "centralized exchange (default: binance, currently only supports: binance)")
-		args.String(&startDate, "start", "backtest start date (YYYY-MM-DD, e.g., 2024-01-01)")
+		args.Bool(&live, "live", "run in live trading mode (default: false, backtest mode)")
+
+		// 回测参数
+		args.String(&startDate, "start", "backtest start date (YYYY-MM-DD, e.g., 2024-01-01) - required for backtest")
 		args.String(&endDate, "end", "backtest end date (YYYY-MM-DD, e.g., 2024-08-30)")
-		args.Float64(&initialCapital, "capital", "initial capital for backtest (default: 10000.0)")
+		args.Float64(&initialCapital, "capital", "initial capital (default: 10000.0)")
 
 		// 策略参数
 		args.Int(&period, "period", "Bollinger Bands period (default: 20)")
@@ -109,6 +112,11 @@ func RegisterBollingerBacktestCmd() {
 			sellStrategy = "moderate" // 默认使用适中策略
 		}
 
+		// 设置默认配置文件路径
+		if configFile == "" {
+			configFile = "config.json"
+		}
+
 		// 确保配置文件路径是绝对路径
 		if !filepath.IsAbs(configFile) {
 			configFile = filepath.Join(exe.Exe.AbsDir, configFile)
@@ -117,20 +125,33 @@ func RegisterBollingerBacktestCmd() {
 		// 验证必需参数
 		if base == "" {
 			fmt.Printf("❌ Error: base currency is required\n")
-			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
-			fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
+			if live {
+				fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE --live\n")
+				fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT --live\n")
+			} else {
+				fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
+				fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
+			}
 			os.Exit(1)
 		}
 		if quote == "" {
 			fmt.Printf("❌ Error: quote currency is required\n")
-			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
-			fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
+			if live {
+				fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE --live\n")
+				fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT --live\n")
+			} else {
+				fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
+				fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
+			}
 			os.Exit(1)
 		}
-		if startDate == "" {
-			fmt.Printf("❌ Error: start date is required\n")
+
+		// 回测模式需要开始日期
+		if !live && startDate == "" {
+			fmt.Printf("❌ Error: start date is required for backtest mode\n")
 			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger -base BASE -quote QUOTE -start YYYY-MM-DD [-end YYYY-MM-DD]\n")
 			fmt.Printf("   Example: ./bin/tradingbot bollinger -base PEPE -quote USDT -start 2024-01-01\n")
+			fmt.Printf("🔴 For live trading: ./bin/tradingbot bollinger -base PEPE -quote USDT --live\n")
 			os.Exit(1)
 		}
 
@@ -146,7 +167,7 @@ func RegisterBollingerBacktestCmd() {
 		}
 
 		// 如果没有设置endDate，使用当前时间
-		if endDate == "" {
+		if !live && endDate == "" {
 			endDate = time.Now().Format("2006-01-02")
 		}
 
@@ -174,8 +195,13 @@ func RegisterBollingerBacktestCmd() {
 			SellStrategyParams:  parsedSellParams,
 		}
 
-		// 运行回测系统
-		err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
+		// 根据模式运行
+		if live {
+			err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams)
+		} else {
+			err = runBollingerBacktestWithPair(configFile, base, quote, timeframe, cex, startDate, endDate, initialCapital, strategyParams)
+		}
+
 		if err != nil {
 			fmt.Printf("❌ Trading system error: %v\n", err)
 			os.Exit(1)
@@ -199,16 +225,10 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 	}
 
 	// 设置交易对、时间周期和交易所
-	err = tradingSystem.SetTradingPairFromStrings(base, quote, timeframe, cex)
+	pair := trading.CreateTradingPair(base, quote)
+	err = tradingSystem.SetTradingPairTimeframeAndCEX(pair, timeframe, cex)
 	if err != nil {
 		return fmt.Errorf("failed to set trading pair, timeframe and CEX: %w", err)
-	}
-
-	// 初始化
-	fmt.Println("🔧 Initializing trading system...")
-	err = tradingSystem.Initialize()
-	if err != nil {
-		return fmt.Errorf("failed to initialize trading system: %w", err)
 	}
 
 	// 设置信号处理
@@ -227,165 +247,15 @@ func runBollingerBacktestWithPair(configPath, base, quote, timeframe, cex, start
 	fmt.Printf("💰 Initial Capital: $%.2f\n", initialCapital)
 
 	// 运行回测
-	stats, err := tradingSystem.RunBacktestFromStrings(base, quote, startDate, endDate, initialCapital, strategyParams)
+	stats, err := tradingSystem.RunBacktestWithParamsAndCapital(pair, startDate, endDate, initialCapital, strategyParams)
 	if err != nil {
 		return fmt.Errorf("backtest failed: %w", err)
 	}
 
 	// 打印结果
-	tradingSystem.PrintBacktestResultsFromStrings(base, quote, stats)
+	tradingSystem.PrintBacktestResults(pair, stats)
 
 	return nil
-}
-
-// RegisterBollingerLiveCmd 注册布林道实盘交易命令
-func RegisterBollingerLiveCmd() {
-	var configFile string
-	var base string
-	var quote string
-	var timeframe string
-	var cex string
-	var initialCapital float64
-
-	// 策略参数
-	var period int
-	var multiplier float64
-	var positionSizePercent float64
-	var minTradeAmount float64
-	var stopLossPercent float64
-	var takeProfitPercent float64
-	var cooldownBars int
-
-	// 卖出策略参数
-	var sellStrategy string
-	var sellStrategyParams string
-	var listSellStrategies bool
-
-	cmd.RegisterCmd("bollinger-live", "run Bollinger Bands live trading", func(args *arg.Arg) {
-		args.String(&configFile, "c", "config file path")
-		args.String(&base, "base", "base currency (e.g., BTC, ETH, PEPE, WIF)")
-		args.String(&quote, "quote", "quote currency (e.g., USDT, USDC, BTC)")
-		args.String(&timeframe, "t", "timeframe (e.g., 1h, 4h, 1d)")
-		args.String(&cex, "cex", "centralized exchange (default: binance, currently only supports: binance)")
-		args.Float64(&initialCapital, "capital", "initial capital for trading (default: 10000.0)")
-
-		// 策略参数
-		args.Int(&period, "period", "Bollinger Bands period (default: 20)")
-		args.Float64(&multiplier, "multiplier", "Bollinger Bands multiplier (default: 2.0)")
-		args.Float64(&positionSizePercent, "position-size", "position size percent (default: 0.95)")
-		args.Float64(&minTradeAmount, "min-trade", "minimum trade amount (default: 10.0)")
-		args.Float64(&stopLossPercent, "stop-loss", "stop loss percent (default: 1.0, means no stop loss)")
-		args.Float64(&takeProfitPercent, "take-profit", "take profit percent (default: 0.2)")
-		args.Int(&cooldownBars, "cooldown", "cooldown bars (default: 1)")
-
-		// 卖出策略参数
-		args.String(&sellStrategy, "sell-strategy", "sell strategy (conservative, moderate, aggressive, trailing_5, trailing_10, combo_smart, partial_pyramid)")
-		args.String(&sellStrategyParams, "sell-strategy-params", "sell strategy parameters (e.g., 'take_profit=0.25' for 25% fixed profit)")
-		args.Bool(&listSellStrategies, "list-sell-strategies", "list all available sell strategies")
-
-		args.Parse()
-
-		// 如果只是列出卖出策略
-		if listSellStrategies {
-			listAvailableSellStrategies()
-			return
-		}
-
-		// 设置默认配置文件路径
-		if configFile == "" {
-			configFile = "config.json"
-		}
-
-		// 确保配置文件路径是绝对路径
-		if !filepath.IsAbs(configFile) {
-			configFile = filepath.Join(exe.Exe.AbsDir, configFile)
-		}
-
-		// 验证必需参数
-		if base == "" {
-			fmt.Printf("❌ Error: base currency is required\n")
-			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger-live -base BASE -quote QUOTE\n")
-			fmt.Printf("📝 Example: ./bin/tradingbot bollinger-live -base PEPE -quote USDT\n")
-			os.Exit(1)
-		}
-
-		if quote == "" {
-			fmt.Printf("❌ Error: quote currency is required\n")
-			fmt.Printf("💡 Usage: ./bin/tradingbot bollinger-live -base BASE -quote QUOTE\n")
-			fmt.Printf("📝 Example: ./bin/tradingbot bollinger-live -base PEPE -quote USDT\n")
-			os.Exit(1)
-		}
-
-		// 设置默认值
-		if timeframe == "" {
-			timeframe = "4h"
-		}
-		if cex == "" {
-			cex = "binance"
-		}
-		if initialCapital == 0 {
-			initialCapital = 10000.0
-		}
-
-		// Set default values if not provided
-		if period == 0 {
-			period = 20
-		}
-		if multiplier == 0 {
-			multiplier = 2.0
-		}
-		if positionSizePercent == 0 {
-			positionSizePercent = 0.95
-		}
-		if minTradeAmount == 0 {
-			minTradeAmount = 10.0
-		}
-		if stopLossPercent == 0 {
-			stopLossPercent = 1.0
-		} // 100% = 不止损
-		if takeProfitPercent == 0 {
-			takeProfitPercent = 0.2
-		} // 20%
-		if cooldownBars == 0 {
-			cooldownBars = 1
-		}
-
-		// 设置卖出策略默认值
-		if sellStrategy == "" {
-			sellStrategy = "moderate" // 默认使用适中策略
-		}
-
-		// 解析卖出策略参数
-		var parsedSellParams map[string]float64
-		var err error
-		if sellStrategyParams != "" {
-			parsedSellParams, err = strategy.ParseSellStrategyParams(sellStrategyParams)
-			if err != nil {
-				fmt.Printf("❌ Failed to parse sell strategy parameters: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		// 创建策略参数
-		strategyParams := &strategy.BollingerBandsParams{
-			Period:              period,
-			Multiplier:          multiplier,
-			PositionSizePercent: positionSizePercent,
-			MinTradeAmount:      minTradeAmount,
-			StopLossPercent:     stopLossPercent,
-			TakeProfitPercent:   takeProfitPercent,
-			CooldownBars:        cooldownBars,
-			SellStrategyName:    sellStrategy,
-			SellStrategyParams:  parsedSellParams,
-		}
-
-		// 运行实盘交易
-		err = runBollingerLiveWithPair(configFile, base, quote, timeframe, cex, initialCapital, strategyParams)
-		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			os.Exit(1)
-		}
-	})
 }
 
 // runBollingerLiveWithPair 运行布林道实盘交易
@@ -406,7 +276,8 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 	defer tradingSystem.Stop()
 
 	// 设置交易对和时间框架
-	err = tradingSystem.SetTradingPairFromStrings(base, quote, timeframe, cex)
+	pair := trading.CreateTradingPair(base, quote)
+	err = tradingSystem.SetTradingPairTimeframeAndCEX(pair, timeframe, cex)
 	if err != nil {
 		return fmt.Errorf("failed to set trading parameters: %w", err)
 	}
@@ -428,7 +299,7 @@ func runBollingerLiveWithPair(configFile, base, quote, timeframe, cex string, in
 	fmt.Println("Press Ctrl+C to stop...")
 
 	// 运行实盘交易
-	err = tradingSystem.RunLiveTradingFromStrings(base, quote, strategyParams)
+	err = tradingSystem.RunLiveTradingWithParams(pair, strategyParams)
 	if err != nil {
 		return fmt.Errorf("live trading failed: %w", err)
 	}

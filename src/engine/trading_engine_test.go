@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,9 +16,79 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var testError = errors.New("test error")
+
 // ============================================================================
 // Mock 组件
 // ============================================================================
+
+// MockCEXClient 用于测试的CEX客户端mock
+type MockCEXClient struct {
+	ShouldError bool
+	CallCount   int
+}
+
+func (m *MockCEXClient) GetName() string {
+	return "mock_cex"
+}
+
+func (m *MockCEXClient) GetDatabase() interface{} {
+	return nil
+}
+
+func (m *MockCEXClient) GetTradingFee() float64 {
+	return 0.001
+}
+
+func (m *MockCEXClient) GetKlines(ctx context.Context, pair cex.TradingPair, interval string, limit int) ([]*cex.KlineData, error) {
+	m.CallCount++
+	if m.ShouldError {
+		return nil, testError
+	}
+	return []*cex.KlineData{}, nil
+}
+
+func (m *MockCEXClient) GetKlinesWithTimeRange(ctx context.Context, pair cex.TradingPair, interval string, startTime, endTime time.Time, limit int) ([]*cex.KlineData, error) {
+	m.CallCount++
+	if m.ShouldError {
+		return nil, testError
+	}
+	return []*cex.KlineData{}, nil
+}
+
+func (m *MockCEXClient) Buy(ctx context.Context, req cex.BuyOrderRequest) (*cex.OrderResult, error) {
+	m.CallCount++
+	if m.ShouldError {
+		return nil, testError
+	}
+	return &cex.OrderResult{}, nil
+}
+
+func (m *MockCEXClient) Sell(ctx context.Context, req cex.SellOrderRequest) (*cex.OrderResult, error) {
+	m.CallCount++
+	if m.ShouldError {
+		return nil, testError
+	}
+	return &cex.OrderResult{}, nil
+}
+
+func (m *MockCEXClient) GetAccount(ctx context.Context) ([]*cex.AccountBalance, error) {
+	m.CallCount++
+	if m.ShouldError {
+		return nil, testError
+	}
+	return []*cex.AccountBalance{}, nil
+}
+
+func (m *MockCEXClient) Ping(ctx context.Context) error {
+	m.CallCount++
+	if m.ShouldError {
+		return testError
+	}
+	return nil
+}
+
+// 注意：CreateTestKlineWithPrices 和 CreateTestPendingOrder 已在 order_manager_test.go 中定义
 
 // MockStrategy for testing
 type mockTradingStrategy struct {
@@ -30,7 +101,7 @@ func (s *mockTradingStrategy) OnData(ctx context.Context, kline *cex.KlineData, 
 	s.onDataCalls++
 
 	if s.shouldError {
-		return nil, TestError
+		return nil, testError
 	}
 
 	// 返回预设的信号
@@ -77,7 +148,7 @@ type mockTradingDataFeed struct {
 
 func (f *mockTradingDataFeed) Start(ctx context.Context) error {
 	if f.startError {
-		return TestError
+		return testError
 	}
 	f.started = true
 	f.currentIdx = 0
@@ -86,7 +157,7 @@ func (f *mockTradingDataFeed) Start(ctx context.Context) error {
 
 func (f *mockTradingDataFeed) GetNext(ctx context.Context) (*cex.KlineData, error) {
 	if f.getNextError {
-		return nil, TestError
+		return nil, testError
 	}
 
 	if f.stopped || f.currentIdx >= len(f.klines) {
@@ -717,7 +788,7 @@ type mockExecutorWithPortfolioError struct {
 }
 
 func (m *mockExecutorWithPortfolioError) GetPortfolio(ctx context.Context) (*executor.Portfolio, error) {
-	return nil, TestError
+	return nil, testError
 }
 
 // ============================================================================

@@ -35,9 +35,12 @@ func NewTradingSystem() (*TradingSystem, error) {
 	}, nil
 }
 
-// SetTradingPairAndTimeframe 设置交易对和时间周期
-func (ts *TradingSystem) SetTradingPairAndTimeframe(pair cex.TradingPair, timeframe string) error {
-	return ts.SetTradingPairTimeframeAndCEX(pair, timeframe, "binance")
+// CreateTradingPair 创建交易对结构体
+func CreateTradingPair(base, quote string) cex.TradingPair {
+	return cex.TradingPair{
+		Base:  strings.ToUpper(base),
+		Quote: strings.ToUpper(quote),
+	}
 }
 
 // SetTradingPairTimeframeAndCEX 设置交易对、时间周期和交易所
@@ -59,50 +62,6 @@ func (ts *TradingSystem) SetTradingPairTimeframeAndCEX(pair cex.TradingPair, tim
 	return nil
 }
 
-// SetTradingPairFromStrings 从字符串创建交易对并设置
-func (ts *TradingSystem) SetTradingPairFromStrings(base, quote, timeframe, cexName string) error {
-	pair := cex.TradingPair{
-		Base:  strings.ToUpper(base),
-		Quote: strings.ToUpper(quote),
-	}
-	return ts.SetTradingPairTimeframeAndCEX(pair, timeframe, cexName)
-}
-
-// RunBacktestFromStrings 从字符串参数运行回测
-func (ts *TradingSystem) RunBacktestFromStrings(base, quote, startDate, endDate string, initialCapital float64, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
-	pair := cex.TradingPair{
-		Base:  strings.ToUpper(base),
-		Quote: strings.ToUpper(quote),
-	}
-	return ts.RunBacktestWithParamsAndCapital(pair, startDate, endDate, initialCapital, strategyParams)
-}
-
-// RunLiveTradingFromStrings 从字符串参数运行实盘交易
-func (ts *TradingSystem) RunLiveTradingFromStrings(base, quote string, strategyParams strategy.StrategyParams) error {
-	pair := cex.TradingPair{
-		Base:  strings.ToUpper(base),
-		Quote: strings.ToUpper(quote),
-	}
-	return ts.RunLiveTradingWithParams(pair, strategyParams)
-}
-
-// PrintBacktestResultsFromStrings 从字符串参数打印回测结果
-func (ts *TradingSystem) PrintBacktestResultsFromStrings(base, quote string, stats *BacktestStatistics) {
-	pair := cex.TradingPair{
-		Base:  strings.ToUpper(base),
-		Quote: strings.ToUpper(quote),
-	}
-	ts.PrintBacktestResults(pair, stats)
-}
-
-// min 辅助函数
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // initializeCEX 初始化 CEX 客户端和数据库连接
 func (ts *TradingSystem) initializeCEX(cexName string) error {
 	// 使用工厂模式创建 CEX 客户端（客户端内部已经初始化了数据库连接）
@@ -116,34 +75,12 @@ func (ts *TradingSystem) initializeCEX(cexName string) error {
 	return nil
 }
 
-// Initialize 初始化系统（保持向后兼容）
-func (ts *TradingSystem) Initialize() error {
-	// 如果 CEX 客户端已经初始化，则跳过
-	if ts.cexClient != nil {
-		return nil
-	}
-
-	// 默认使用 binance
-	return ts.initializeCEX("binance")
-}
-
-// RunBacktest 运行回测
-func (ts *TradingSystem) RunBacktest(pair cex.TradingPair, startDate, endDate string) (*BacktestStatistics, error) {
-	return ts.RunBacktestWithParams(pair, startDate, endDate, nil)
-}
-
-// RunBacktestWithParams 使用指定策略参数运行回测
-func (ts *TradingSystem) RunBacktestWithParams(pair cex.TradingPair, startDate, endDate string, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
-	return ts.RunBacktestWithParamsAndCapital(pair, startDate, endDate, 10000.0, strategyParams)
-}
-
 // RunBacktestWithParamsAndCapital 使用指定策略参数和初始资金运行回测
 func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, startDate, endDate string, initialCapital float64, strategyParams strategy.StrategyParams) (*BacktestStatistics, error) {
 
-	// 初始化系统
-	err := ts.Initialize()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize trading system: %w", err)
+	// 初始化 CEX 客户端（如果还没有初始化）
+	if ts.cexClient == nil {
+		return nil, fmt.Errorf("CEX client not initialized")
 	}
 
 	fmt.Println("🔄 Starting backtest...")
@@ -165,7 +102,7 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 		return nil, fmt.Errorf("invalid strategy parameters: %w", err)
 	}
 
-	err = strategyImpl.SetParams(params)
+	err := strategyImpl.SetParams(params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set strategy parameters: %w", err)
 	}
@@ -173,7 +110,7 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 
 	// 创建回测执行器
 	initialCapitalDecimal := decimal.NewFromFloat(initialCapital)
-	// backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
+	backtestExecutor := executor.NewBacktestExecutor(pair, initialCapitalDecimal)
 
 	// 设置手续费（从CEX客户端获取）
 	fee := ts.cexClient.GetTradingFee()
@@ -317,11 +254,6 @@ func (ts *TradingSystem) RunBacktestWithParamsAndCapital(pair cex.TradingPair, s
 	}, nil
 }
 
-// RunLiveTrading 运行实时交易
-func (ts *TradingSystem) RunLiveTrading(pair cex.TradingPair) error {
-	return ts.RunLiveTradingWithParams(pair, nil)
-}
-
 // RunLiveTradingWithParams 使用指定策略参数运行实时交易
 func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategyParams strategy.StrategyParams) error {
 	// 测试 CEX 连接
@@ -331,10 +263,9 @@ func (ts *TradingSystem) RunLiveTradingWithParams(pair cex.TradingPair, strategy
 	}
 	fmt.Println("✓ Connected to CEX API")
 
-	// 初始化系统
-	err = ts.Initialize()
-	if err != nil {
-		return fmt.Errorf("failed to initialize trading system: %w", err)
+	// 检查 CEX 客户端是否已初始化
+	if ts.cexClient == nil {
+		return fmt.Errorf("CEX client not initialized")
 	}
 
 	fmt.Println("🔴 Starting live trading...")

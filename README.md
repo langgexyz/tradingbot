@@ -9,7 +9,7 @@
 - **布林道策略**: 经典技术分析策略实现
 - **数据库存储**: PostgreSQL存储历史K线数据
 - **高效回测**: 基于历史数据的策略回测
-- **实时交易**: 支持模拟和实盘交易
+- **实时交易**: 支持模拟和币安实盘交易
 - **风险管理**: 止损止盈、仓位控制
 
 ### 📊 数据管理
@@ -71,7 +71,29 @@ make kline
 
 ```bash
 # 运行布林道策略回测
-./bin/tradingbot bollinger
+./bin/tradingbot bollinger-backtest -base DOGE -quote USDT -start 2024-01-01 -end 2024-06-30 -t 4h -capital 10000 -sell-strategy trailing_5
+```
+
+### 6. 配置实盘交易（可选）
+
+**⚠️ 风险提示：实盘交易涉及真实资金，请谨慎操作！**
+
+```bash
+# 1. 配置币安API密钥（编辑 bin/config.json）
+{
+  "tradingbot/src/cex/binance:Config": {
+    "APIKey": "你的API密钥",
+    "SecretKey": "你的Secret密钥",
+    "EnableTrading": true,
+    "ReadOnly": false
+  }
+}
+
+# 2. 测试连接
+./bin/tradingbot bollinger-backtest -base BTC -quote USDT -start 2024-01-01 -end 2024-01-02 -t 1h -capital 100
+
+# 3. 启动实盘交易
+./bin/tradingbot bollinger-live -base DOGE -quote USDT -t 4h -sell-strategy conservative
 ```
 
 ## 📋 命令使用
@@ -92,20 +114,26 @@ make kline
 ./bin/tradingbot bollinger --list
 ```
 
-### 布林道策略回测
+### 布林道策略交易
 
 ```bash
-# 使用默认参数回测BTCUSDT
-./bin/tradingbot bollinger -s BTCUSDT
+# 回测命令
+./bin/tradingbot bollinger-backtest -base DOGE -quote USDT -start 2024-01-01 -end 2024-06-30 -t 4h -capital 10000 -sell-strategy trailing_5
 
-# 指定时间周期回测
-./bin/tradingbot bollinger -s ETHUSDT -t 1h
+# 实盘交易命令
+./bin/tradingbot bollinger-live -base DOGE -quote USDT -t 4h -sell-strategy conservative
 
-# 指定交易所回测（目前只支持binance）
-./bin/tradingbot bollinger -s WIFUSDT -cex binance
+# 支持的交易策略
+-sell-strategy conservative   # 保守策略 (15%固定止盈)
+-sell-strategy moderate      # 中等策略 (20%固定止盈) - 默认
+-sell-strategy aggressive    # 激进策略 (30%固定止盈)
+-sell-strategy trailing_5    # 5%跟踪止损 (15%后启动)
+-sell-strategy trailing_10   # 10%跟踪止损 (20%后启动)
+-sell-strategy combo_smart   # 智能组合策略
 
-# 查看布林道策略帮助
-./bin/tradingbot bollinger --help
+# 查看命令帮助
+./bin/tradingbot bollinger-backtest --help
+./bin/tradingbot bollinger-live --help
 ```
 
 ### Makefile快捷命令
@@ -124,93 +152,57 @@ make clean      # 清理构建文件
 
 ```json
 {
-  "cex": {
-    "binance": {
-      "api_key": "",             // API密钥(可选)
-      "secret_key": "",          // API私钥(可选)
-      "base_url": "https://api.binance.com",
-      "timeout": 10,
-      "enable_trading": false,   // 是否启用交易
-      "read_only": true,         // 只读模式
-      "database": {
-        "host": "localhost",
-        "port": "5432", 
-        "user": "tradingbot",
-        "password": "tradingbot123",
-        "dbname": "tradingbot_binance",
-        "sslmode": "disable",
-        "max_open_conns": 25,
-        "max_idle_conns": 5
-      }
-    }
+  "tradingbot/src/cex/binance:Config": {
+    "APIKey": "",                // 币安API密钥
+    "SecretKey": "",             // 币安Secret密钥
+    "BaseURL": "https://api.binance.com",
+    "Timeout": 10,
+    "EnableTrading": false,      // 实盘交易开关
+    "ReadOnly": true,            // 只读模式
+    "Fee": 0.001,               // 交易手续费率
+    "DBName": "tradingbot_binance"
   },
-  "trading": {
-    "symbol": "",                // 通过命令行参数-s指定
-    "timeframe": "4h",
-    "initial_capital": 10000,    // 初始资金(USDT)
-    "mode": "backtest"           // 运行模式: backtest/paper/live
+  "tradingbot/src/database:DatabaseConfig": {
+    "Host": "localhost",
+    "Port": "5432",
+    "User": "tradingbot",
+    "Password": "",
+    "DBName": "tradingbot",
+    "SSLMode": "disable",
+    "MaxOpenConns": 25,
+    "MaxIdleConns": 5
   },
-  "strategy": {
-    "name": "bollinger_bands",
-    "parameters": {
-      "stop_loss_percent": 1.0,  // 止损: 1.0=永不止损, 0.05=5%止损
-      "take_profit_percent": 0.5 // 止盈: 0.5=50%止盈
-    }
-  },
-  "backtest": {
-    "start_date": "2025-03-16",  // 回测开始日期
-    "end_date": "2025-08-30",    // 回测结束日期
-    "fee": 0.001                 // 手续费: 0.001=0.1%
-  },
-  "symbols": [
-    {"symbol": "BTCUSDT", "base_asset": "BTC", "quote_asset": "USDT"},
-    {"symbol": "ETHUSDT", "base_asset": "ETH", "quote_asset": "USDT"},
-    {"symbol": "WIFUSDT", "base_asset": "WIF", "quote_asset": "USDT"}
-  ]
+  "tradingbot/src/trading:TradingConfig": {
+    "Timeframe": "4h",
+    "MaxPositions": 1,
+    "PositionSizePercent": 0.95,
+    "MinTradeAmount": 10
+  }
 }
 ```
 
 ### 配置详解
 
-- **cex.binance**: 币安API和数据库配置，每个交易所有独立的数据库
-- **trading**: 交易基础配置，交易对通过命令行参数指定
-- **strategy**: 策略参数配置，支持止损止盈设置
-- **backtest**: 回测相关配置，包含时间范围和手续费
-- **symbols**: 支持的交易对列表，用于验证命令行参数
-
-### 🚀 使用方法
-
-```bash
-# 查看支持的交易对
-./bin/tradingbot bollinger --list
-
-# 回测BTCUSDT (4小时周期，默认使用binance)
-./bin/tradingbot bollinger -s BTCUSDT
-
-# 回测ETHUSDT (1小时周期，指定交易所)  
-./bin/tradingbot bollinger -s ETHUSDT -t 1h -cex binance
-
-# 查看命令行帮助
-./bin/tradingbot bollinger --help
-```
+- **binance:Config**: 币安API配置，包含密钥、交易开关等
+- **database:DatabaseConfig**: PostgreSQL数据库连接配置  
+- **trading:TradingConfig**: 交易基础配置，仓位大小、最小交易金额等
 
 ### ⚙️ 常用配置修改
 
-#### 修改初始资金
+#### 修改仓位大小
 ```json
-"initial_capital": 50000  // 改为5万USDT
+"PositionSizePercent": 0.5  // 改为50%仓位
 ```
 
-#### 修改止损止盈
+#### 修改最小交易金额
 ```json
-"stop_loss_percent": 0.05,   // 5%止损
-"take_profit_percent": 0.1   // 10%止盈
+"MinTradeAmount": 50  // 最小50 USDT
 ```
 
-#### 添加新交易对
-在配置文件的 `symbols` 数组中添加:
+#### 启用实盘交易
 ```json
-{"symbol": "DOGEUSDT", "base_asset": "DOGE", "quote_asset": "USDT"}
+"EnableTrading": true,
+"ReadOnly": false
 ```
 
 ### 🗄️ 数据库连接信息
@@ -474,12 +466,170 @@ strategy1 := strategy.NewCompositeStrategy(
 - 并行计算
 - 内存优化
 
+## 💰 币安实盘交易
+
+### 🚨 重要安全提醒
+
+**⚠️  使用真实资金进行交易前，请仔细阅读本指南！**
+**⚠️  建议先使用小额资金进行测试！**
+**⚠️  交易有风险，可能导致资金损失！**
+
+### 🔑 配置币安API密钥
+
+#### 1. 创建币安API密钥
+1. 登录 [币安官网](https://www.binance.com)
+2. 进入 **账户管理** → **API管理**
+3. 创建新的API密钥
+4. **重要**：只启用以下权限：
+   - ✅ **读取** (Read)
+   - ✅ **现货交易** (Spot Trading)
+   - ❌ **合约交易** (Futures Trading) - 不需要
+   - ❌ **提币** (Withdraw) - 为了安全，不启用
+5. 设置IP白名单（推荐）
+6. 保存API Key和Secret Key
+
+#### 2. 配置交易系统
+
+编辑 `bin/config.json` 文件：
+
+```json
+{
+  "tradingbot/src/cex/binance:Config": {
+    "APIKey": "你的币安API密钥",
+    "SecretKey": "你的币安Secret密钥",
+    "BaseURL": "https://api.binance.com",
+    "Timeout": 10,
+    "EnableTrading": true,        // 启用实盘交易
+    "ReadOnly": false,           // 关闭只读模式
+    "Fee": 0.001,
+    "DBName": "tradingbot_binance"
+  }
+}
+```
+
+**安全建议**：
+- 测试阶段设置 `"EnableTrading": false, "ReadOnly": true`
+- 生产环境设置 `"EnableTrading": true, "ReadOnly": false`
+
+### 🚀 启动实盘交易
+
+#### 1. 测试连接
+```bash
+# 测试API连接
+./bin/tradingbot bollinger-backtest -base BTC -quote USDT -start 2024-01-01 -end 2024-01-02 -t 1h -capital 100
+```
+
+成功配置后应显示：
+```
+✓ Connected to CEX API
+🗄️ Connecting to binance database... connected!
+```
+
+#### 2. 启动实盘交易
+```bash
+# 启动DOGE/USDT实盘交易（保守策略）
+./bin/tradingbot bollinger-live \
+  -base DOGE \
+  -quote USDT \
+  -t 4h \
+  -sell-strategy conservative
+```
+
+#### 3. 支持的交易策略
+
+| 策略 | 风险级别 | 预期收益 | 适用场景 |
+|------|----------|----------|----------|
+| `conservative` | 🟢 低 | 34.57% | 稳健投资 |
+| `moderate` | 🟡 中 | 43.83% | 平衡投资 |
+| `aggressive` | 🟠 高 | 83.22% | 激进投资 |
+| `trailing_5` | 🔴 最高 | 128.40% | 牛市趋势 |
+| `trailing_10` | 🟠 高 | 106.69% | 震荡市场 |
+
+#### 4. 实时监控
+
+交易启动后会显示：
+```
+🔴 Starting live trading...
+✓ Connected to CEX API
+📊 投资组合状态: DOGE余额=1000, USDT余额=500, 当前价格=0.08, 总价值=580
+🔵 生成买入限价单: quantity=12500, price=0.078
+✅ 实盘买入订单成功: OrderID=123456789
+```
+
+使用 `Ctrl+C` 安全停止交易。
+
+### 🛡️ 安全最佳实践
+
+#### API安全
+- ✅ 设置IP白名单
+- ✅ 定期更换API密钥
+- ✅ 只启用必要权限
+- ❌ 永远不要分享API密钥
+
+#### 资金安全
+- ✅ 从小额开始测试
+- ✅ 设置合理的仓位大小
+- ✅ 定期检查交易记录
+- ✅ 保持账户资金监控
+
+#### 系统安全
+- ✅ 在安全的网络环境运行
+- ✅ 使用最新版本的交易系统
+- ✅ 定期备份配置文件
+
+### 🔧 故障排除
+
+**API连接失败:**
+```
+failed to connect to CEX: Binance ping failed
+```
+- 检查API密钥是否正确
+- 检查网络连接和IP白名单
+- 确认币安服务状态
+
+**交易权限错误:**
+```
+This request is not enabled for this account
+```
+- 检查API权限设置
+- 确认启用了现货交易权限
+
+**余额不足:**
+```
+Account has insufficient balance
+```
+- 检查USDT余额是否充足
+- 确认交易对资产余额
+
+### ✅ 启动检查清单
+
+在开始实盘交易前，请确认：
+
+- [ ] 已创建币安API密钥
+- [ ] 已正确配置 `bin/config.json`
+- [ ] 已测试API连接成功
+- [ ] 已了解选择的交易策略
+- [ ] 已设置合理的资金规模
+- [ ] 已准备好监控交易过程
+- [ ] 已了解如何停止交易
+- [ ] 已备份重要配置文件
+
 ## ⚠️ 风险提示
 
-1. **投资风险**: 加密货币交易存在高风险，可能导致资金损失
-2. **技术风险**: 软件可能存在bug，请充分测试后使用
-3. **API风险**: 请妥善保管API密钥，建议使用只读权限
-4. **网络风险**: 网络延迟可能影响交易执行
+**实盘交易特别风险提示：**
+1. **资金损失风险**: 实盘交易使用真实资金，可能导致全部本金损失
+2. **策略风险**: 任何交易策略都无法保证盈利，历史收益不代表未来表现
+3. **技术风险**: 软件Bug、网络中断、API故障等可能导致交易执行异常
+4. **市场风险**: 加密货币市场波动极大，价格可能急剧下跌
+5. **操作风险**: 错误配置、误操作可能导致意外损失
+
+**通用风险：**
+1. **投资风险**: 加密货币交易存在高风险，仅投入您能承受损失的资金
+2. **技术风险**: 软件可能存在bug，请在小额资金上充分测试后再使用
+3. **API风险**: 请妥善保管API密钥，建议设置IP白名单和最小权限
+4. **网络风险**: 网络延迟、断线可能影响交易执行
+
+**免责声明**: 本软件仅供学习和研究使用，使用者须自行承担所有交易风险和损失。
 
 ## 📄 许可证
 

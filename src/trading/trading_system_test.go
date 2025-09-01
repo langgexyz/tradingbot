@@ -224,24 +224,17 @@ func TestFindPreviousBuyOrder(t *testing.T) {
 }
 
 // Test key trading system methods with minimal setup
-func TestTradingSystem_SetTradingPairFromStrings(t *testing.T) {
+func TestTradingSystem_SetTradingPairTimeframeAndCEX(t *testing.T) {
 	ts, err := NewTradingSystem()
 	require.NoError(t, err)
 
-	err = ts.SetTradingPairFromStrings("BTC", "USDT", "4h", "binance")
+	pair := cex.TradingPair{Base: "BTC", Quote: "USDT"}
+	err = ts.SetTradingPairTimeframeAndCEX(pair, "4h", "binance")
 	// 这个测试可能会失败（因为需要实际的CEX连接），但至少验证参数处理
 	// 我们主要测试它不会panic
 	assert.NotPanics(t, func() {
-		ts.SetTradingPairFromStrings("BTC", "USDT", "4h", "binance")
+		ts.SetTradingPairTimeframeAndCEX(pair, "4h", "binance")
 	})
-}
-
-// Test min helper function
-func TestMin(t *testing.T) {
-	assert.Equal(t, 5, min(10, 5))
-	assert.Equal(t, 3, min(3, 8))
-	assert.Equal(t, 0, min(0, 1))
-	assert.Equal(t, -5, min(-2, -5))
 }
 
 // 基准测试关键函数

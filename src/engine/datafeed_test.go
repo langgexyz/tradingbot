@@ -2,14 +2,42 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"tradingbot/src/cex"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var TestError = errors.New("test error")
+
+// CreateTestKlines 创建测试用的K线数据
+func CreateTestKlines(count int, startTime time.Time, interval time.Duration) []*cex.KlineData {
+	klines := make([]*cex.KlineData, count)
+	basePrice := decimal.NewFromFloat(0.1)
+
+	for i := 0; i < count; i++ {
+		// 模拟价格波动
+		priceVariation := decimal.NewFromFloat(float64(i%10-5) * 0.001) // ±0.5% 波动
+		price := basePrice.Add(priceVariation)
+
+		klines[i] = &cex.KlineData{
+			OpenTime:  startTime.Add(time.Duration(i) * interval),
+			CloseTime: startTime.Add(time.Duration(i+1) * interval),
+			Open:      price,
+			High:      price.Mul(decimal.NewFromFloat(1.02)),   // +2%
+			Low:       price.Mul(decimal.NewFromFloat(0.98)),   // -2%
+			Close:     price.Add(decimal.NewFromFloat(0.0001)), // 微小变化
+			Volume:    decimal.NewFromInt(1000),
+		}
+	}
+
+	return klines
+}
 
 // ============================================================================
 // BacktestDataFeed 测试
