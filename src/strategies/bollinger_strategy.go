@@ -112,10 +112,10 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineDat
 
 	// 开发日志：只在关键节点打印
 	if s.currentBar%10 == 1 || s.currentBar <= 5 {
-		logger.Info("📊 处理",
-			"bar", s.currentBar,
-			"price", kline.Close.String(),
-			"pos", portfolio.Position.String())
+		logger.Info(fmt.Sprintf("📊 处理 bar:%d price:%s pos:%s",
+			s.currentBar,
+			kline.Close.String(),
+			portfolio.Position.String()))
 	}
 
 	// 添加价格到历史数据
@@ -131,7 +131,7 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineDat
 	if len(s.priceHistory) < s.Period {
 		// 只在开始和即将完成时打印
 		if s.currentBar == 1 || len(s.priceHistory) == s.Period-1 {
-			logger.Info("⚠️ 数据积累", "progress", fmt.Sprintf("%d/%d", len(s.priceHistory), s.Period))
+			logger.Info(fmt.Sprintf("⚠️ 数据积累 进度:%d/%d", len(s.priceHistory), s.Period))
 		}
 		return nil, nil
 	}
@@ -149,12 +149,10 @@ func (s *BollingerBandsStrategy) OnData(ctx context.Context, kline *cex.KlineDat
 	priceVsUpper := kline.Close.Sub(bbResult.UpperBand)
 	priceVsLower := kline.Close.Sub(bbResult.LowerBand)
 	if priceVsLower.Abs().LessThan(decimal.NewFromFloat(0.00000010)) || priceVsUpper.Abs().LessThan(decimal.NewFromFloat(0.00000010)) {
-		logger.Info("🎯 接近边界",
-			"price", kline.Close.String(),
-			"upper", bbResult.UpperBand.String(),
-			"lower", bbResult.LowerBand.String(),
-			"vs_upper", priceVsUpper.String(),
-			"vs_lower", priceVsLower.String())
+		logger.Info(fmt.Sprintf("🎯 接近边界 price:%s upper:%s lower:%s",
+			kline.Close.String(),
+			bbResult.UpperBand.String(),
+			bbResult.LowerBand.String()))
 	}
 
 	var signals []*strategy.Signal

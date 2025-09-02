@@ -156,10 +156,10 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 			// 3️⃣ 执行策略分析
 			// 简化策略分析日志：只在关键节点打印
 			if klineCount%10 == 1 || klineCount <= 5 {
-				logger.Info("🧠 策略分析",
-					"index", klineCount,
-					"time", kline.OpenTime.Format("15:04"),
-					"price", kline.Close.String())
+				logger.Info(fmt.Sprintf("🧠 策略分析 #%d %s price:%s",
+					klineCount,
+					kline.OpenTime.Format("15:04"),
+					kline.Close.String()))
 			}
 
 			signals, err := e.strategy.OnData(ctx, kline, portfolio)
