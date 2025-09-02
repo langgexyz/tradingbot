@@ -51,10 +51,7 @@ func (e *TradingExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResul
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingExecutor")
 
-	logger.Info(fmt.Sprintf("执行买入订单: quantity=%s, price=%s, reason=%s",
-		order.Quantity.String(),
-		order.Price.String(),
-		order.Reason))
+	// 删除详细的执行步骤日志，买入结果将在最后统一记录
 
 	// 1. 业务逻辑检查（回测和实盘都需要）
 	executionPrice := order.Price
@@ -88,11 +85,8 @@ func (e *TradingExecutor) Buy(ctx context.Context, order *BuyOrder) (*OrderResul
 	// 4. 记录订单和统计（回测和实盘都需要）
 	e.orders = append(e.orders, *result)
 
-	logger.Info(fmt.Sprintf("买入成功: quantity=%s, price=%s, remaining_cash=%s, position=%s",
-		order.Quantity.String(),
-		executionPrice.String(),
-		e.cash.String(),
-		e.position.String()))
+	logger.Info(fmt.Sprintf("💰 买入完成: %s @ %s, 余额: %s", 
+		order.Quantity.String(), executionPrice.String(), e.cash.String()))
 
 	return result, nil
 }
@@ -102,10 +96,7 @@ func (e *TradingExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 	ctx, logger := log.WithCtx(ctx)
 	logger.PushPrefix("TradingExecutor")
 
-	logger.Info(fmt.Sprintf("执行卖出订单: quantity=%s, price=%s, reason=%s",
-		order.Quantity.String(),
-		order.Price.String(),
-		order.Reason))
+	// 删除详细的执行步骤日志，卖出结果将在最后统一记录
 
 	// 1. 业务逻辑检查（回测和实盘都需要）
 	if e.position.LessThan(order.Quantity) {
@@ -153,7 +144,8 @@ func (e *TradingExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 				// 完成一个交易对，增加总交易数
 				e.totalTrades++
 
-				logger.Info(fmt.Sprintf("交易对完成: buy_price=%s, sell_price=%s, pnl=%s",
+				logger.Info("")  // 空行分隔
+				logger.Info(fmt.Sprintf("📈 交易完成: %s → %s, 盈亏: %s", 
 					buyPrice.String(), executionPrice.String(), pnl.String()))
 				break
 			}
@@ -166,11 +158,8 @@ func (e *TradingExecutor) Sell(ctx context.Context, order *SellOrder) (*OrderRes
 	// 6. 记录订单
 	e.orders = append(e.orders, *result)
 
-	logger.Info(fmt.Sprintf("卖出成功: quantity=%s, price=%s, cash=%s, position=%s",
-		order.Quantity.String(),
-		executionPrice.String(),
-		e.cash.String(),
-		e.position.String()))
+	logger.Info(fmt.Sprintf("💎 卖出完成: %s @ %s, 余额: %s", 
+		order.Quantity.String(), executionPrice.String(), e.cash.String()))
 
 	return result, nil
 }

@@ -38,18 +38,11 @@ func (e *BacktestOrderStrategy) ExecuteBuy(ctx context.Context, order *BuyOrder)
 
 	// TODO: 保存到本地数据库
 
-	// 打印结构化日志用于数据分析
+	// 简化的交易记录，保留关键信息用于分析
 	ctx, logger := log.WithCtx(ctx)
-	logger.Info("TRADE_RECORD",
-		"mode", "BACKTEST",
-		"action", "BUY",
-		"order_id", result.OrderID,
-		"symbol", result.TradingPair.String(),
-		"quantity", result.Quantity.String(),
-		"price", result.Price.String(),
-		"notional", result.Quantity.Mul(result.Price).String(),
-		"timestamp", result.Timestamp.Format("2006-01-02T15:04:05Z"),
-		"reason", order.Reason)
+	logger.Info(fmt.Sprintf("📊 BUY: %s %s @ %s (%s)", 
+		result.TradingPair.String(), result.Quantity.String(), 
+		result.Price.String(), result.Timestamp.Format("01-02 15:04")))
 
 	return result, nil
 }
@@ -69,18 +62,11 @@ func (e *BacktestOrderStrategy) ExecuteSell(ctx context.Context, order *SellOrde
 
 	// TODO: 保存到本地数据库
 
-	// 打印结构化日志用于数据分析
+	// 简化的交易记录，保留关键信息用于分析
 	ctx, logger := log.WithCtx(ctx)
-	logger.Info("TRADE_RECORD",
-		"mode", "BACKTEST",
-		"action", "SELL",
-		"order_id", result.OrderID,
-		"symbol", result.TradingPair.String(),
-		"quantity", result.Quantity.String(),
-		"price", result.Price.String(),
-		"notional", result.Quantity.Mul(result.Price).String(),
-		"timestamp", result.Timestamp.Format("2006-01-02T15:04:05Z"),
-		"reason", order.Reason)
+	logger.Info(fmt.Sprintf("📊 SELL: %s %s @ %s (%s)", 
+		result.TradingPair.String(), result.Quantity.String(), 
+		result.Price.String(), result.Timestamp.Format("01-02 15:04")))
 
 	return result, nil
 }

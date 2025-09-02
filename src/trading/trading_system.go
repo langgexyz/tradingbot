@@ -495,7 +495,7 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 			// 计算交易金额 (数量 × 价格)
 			amount := order.Quantity.Mul(order.Price)
 
-			fmt.Printf("%s %4s %12.0f %9.4f %10.2f %12s %s\n",
+			fmt.Printf("%s %4s %12.0f %12.8f %10.2f %12s %s\n",
 				order.Timestamp.Format("01-02 15:04"),
 				order.Side,
 				order.Quantity.InexactFloat64(),
@@ -578,7 +578,7 @@ func (ts *TradingSystem) PrintBacktestResults(pair cex.TradingPair, stats *Backt
 				}
 			}
 
-			fmt.Printf("%2d   %s %10.6f  $%8.2f  %s %10.6f  $%8.2f   %6.2f%%  $%8.2f  %8s   %s\n",
+			fmt.Printf("%2d   %s %12.8f  $%8.2f  %s %12.8f  $%8.2f   %6.2f%%  $%8.2f  %8s   %s\n",
 				i+1,
 				trade.BuyOrder.Timestamp.Format("01-02 15:04"),
 				trade.BuyOrder.Price.InexactFloat64(),

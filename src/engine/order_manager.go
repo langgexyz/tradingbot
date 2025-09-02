@@ -78,12 +78,8 @@ func (m *BacktestOrderManager) PlaceOrder(ctx context.Context, order *PendingOrd
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	logger.Info("下挂单",
-		"id", order.ID,
-		"type", order.Type,
-		"price", order.Price.String(),
-		"quantity", order.Quantity.String(),
-		"reason", order.Reason)
+	logger.Info(fmt.Sprintf("📋 挂单: %s %s @ %s", 
+		order.Type, order.Quantity.String(), order.Price.String()))
 
 	m.pendingOrders[order.ID] = order
 	return nil
@@ -97,7 +93,7 @@ func (m *BacktestOrderManager) CancelOrder(ctx context.Context, orderID string) 
 
 	if _, exists := m.pendingOrders[orderID]; exists {
 		delete(m.pendingOrders, orderID)
-		logger.Info("取消挂单", "id", orderID)
+		logger.Info(fmt.Sprintf("取消挂单: id=%s", orderID))
 		return nil
 	}
 
@@ -113,7 +109,7 @@ func (m *BacktestOrderManager) CancelAllOrders(ctx context.Context) error {
 	count := len(m.pendingOrders)
 	m.pendingOrders = make(map[string]*PendingOrder)
 
-	logger.Info("取消所有挂单", "count", count)
+	logger.Info(fmt.Sprintf("取消所有挂单: count=%d", count))
 	return nil
 }
 
@@ -130,7 +126,7 @@ func (m *BacktestOrderManager) CheckAndExecuteOrders(ctx context.Context, kline 
 	for orderID, pendingOrder := range m.pendingOrders {
 		// 检查是否过期
 		if pendingOrder.ExpireTime != nil && m.currentTime.After(*pendingOrder.ExpireTime) {
-			logger.Info("挂单过期，自动取消", "id", orderID, "expire_time", pendingOrder.ExpireTime)
+			logger.Info(fmt.Sprintf("挂单过期，自动取消: id=%s, expire_time=%s", orderID, pendingOrder.ExpireTime))
 			toRemove = append(toRemove, orderID)
 			continue
 		}
@@ -166,13 +162,7 @@ func (m *BacktestOrderManager) CheckAndExecuteOrders(ctx context.Context, kline 
 		}
 
 		if shouldExecute {
-			logger.Info("挂单满足执行条件",
-				"id", orderID,
-				"type", pendingOrder.Type,
-				"order_price", pendingOrder.Price.String(),
-				"execution_price", executionPrice.String(),
-				"kline_high", kline.High.String(),
-				"kline_low", kline.Low.String())
+			// 删除详细的执行条件日志，执行结果在executor中记录
 
 			// 执行订单
 			var result *executor.OrderResult
@@ -211,10 +201,7 @@ func (m *BacktestOrderManager) CheckAndExecuteOrders(ctx context.Context, kline 
 			}
 
 			if result != nil && result.Success {
-				logger.Info("挂单执行成功",
-					"id", orderID,
-					"execution_price", executionPrice.String(),
-					"quantity", pendingOrder.Quantity.String())
+				// 挂单执行详情已在executor中记录，此处无需重复
 				executedResults = append(executedResults, result)
 				toRemove = append(toRemove, orderID)
 			}
@@ -282,7 +269,7 @@ func (m *LiveOrderManager) CancelOrder(ctx context.Context, orderID string) erro
 	ctx, logger := log.WithCtx(ctx)
 
 	// TODO: 实现真实的取消挂单API调用
-	logger.Info("取消实盘挂单（暂未实现）", "id", orderID)
+	logger.Info(fmt.Sprintf("取消实盘挂单（暂未实现）: id=%s", orderID))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -300,7 +287,7 @@ func (m *LiveOrderManager) CancelAllOrders(ctx context.Context) error {
 	count := len(m.pendingOrders)
 	m.pendingOrders = make(map[string]*PendingOrder)
 
-	logger.Info("取消所有实盘挂单（暂未实现）", "count", count)
+	logger.Info(fmt.Sprintf("取消所有实盘挂单（暂未实现）: count=%d", count))
 	return fmt.Errorf("live order cancellation not implemented yet")
 }
 

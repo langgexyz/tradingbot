@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"time"
 
@@ -13,6 +14,13 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/xpwu/go-log/log"
 )
+
+// generateShortOrderID 生成简短的订单ID
+func generateShortOrderID(prefix string, base string) string {
+	fullID := fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixNano(), base)
+	hash := md5.Sum([]byte(fullID))
+	return fmt.Sprintf("%s_%x", prefix, hash[:4]) // 取前8个字符的hex
+}
 
 // TradingEngine 统一的交易引擎（支持回测和实盘）
 type TradingEngine struct {
@@ -134,13 +142,9 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 			klineCount++
 
 			// 1️⃣ 首先检查并执行挂单
-			executedOrders, err := e.orderManager.CheckAndExecuteOrders(ctx, kline)
+			_, err = e.orderManager.CheckAndExecuteOrders(ctx, kline)
 			if err != nil {
 				logger.Error("检查挂单失败", "error", err)
-			}
-
-			if len(executedOrders) > 0 {
-				logger.Info("挂单执行", "count", len(executedOrders))
 			}
 
 			// 2️⃣ 获取当前投资组合状态
@@ -154,13 +158,7 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 			portfolio.Timestamp = kline.OpenTime
 
 			// 3️⃣ 执行策略分析
-			// 简化策略分析日志：只在关键节点打印
-			if klineCount%10 == 1 || klineCount <= 5 {
-				logger.Info(fmt.Sprintf("🧠 策略分析 #%d %s price:%s",
-					klineCount,
-					kline.OpenTime.Format("15:04"),
-					kline.Close.String()))
-			}
+			// 删除频繁的策略分析日志
 
 			signals, err := e.strategy.OnData(ctx, kline, portfolio)
 			if err != nil {
@@ -168,18 +166,13 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 				continue
 			}
 
-			// 只在有信号时打印结果
-			if len(signals) > 0 {
-				logger.Info("📊 策略完成", "signals", len(signals))
-			}
+			// 信号处理详情在下方的信号循环中记录
 
 			// 4️⃣ 处理交易信号（生成新挂单）
-			for i, signal := range signals {
-				logger.Info("🎯 处理交易信号",
-					"signal_index", i+1,
-					"signal_type", signal.Type,
-					"signal_strength", signal.Strength,
-					"signal_reason", signal.Reason)
+			for _, signal := range signals {
+				logger.Info("")  // 空行分隔
+				logger.Info(fmt.Sprintf("🎯 %s信号: %s (强度%.1f)", 
+					signal.Type, signal.Reason, signal.Strength))
 
 				err := e.processSignal(ctx, signal, kline, portfolio)
 				if err != nil {
@@ -187,12 +180,11 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 				}
 			}
 
-			// 定期输出进度
-			if klineCount%100 == 0 {
-				logger.Info("交易进度",
-					"klines", klineCount,
-					"pending_orders", e.orderManager.GetOrderCount(),
-					"current_time", e.dataFeed.GetCurrentTime().Format("2006-01-02 15:04"))
+			// 定期输出进度 - 降低频率，只在重要节点显示
+			if klineCount%200 == 0 && klineCount > 0 {
+				logger.Info("")  // 空行分隔
+				logger.Info(fmt.Sprintf("📈 回测进度: %d根K线已处理, 时间: %s", 
+					klineCount, e.dataFeed.GetCurrentTime().Format("2006-01-02")))
 			}
 		}
 	}
@@ -200,7 +192,7 @@ func (e *TradingEngine) Run(ctx context.Context) error {
 finished:
 	// 保存K线数据供后续使用（如回撤计算）
 	e.lastKlines = allKlines
-	logger.Info("交易完成", "total_klines", len(allKlines))
+	logger.Info(fmt.Sprintf("交易完成: total_klines=%d", len(allKlines)))
 	return nil
 }
 
@@ -220,11 +212,8 @@ func (e *TradingEngine) GetKlines() []*cex.KlineData {
 func (e *TradingEngine) processSignal(ctx context.Context, signal *strategy.Signal, kline *cex.KlineData, portfolio *executor.Portfolio) error {
 	ctx, logger := log.WithCtx(ctx)
 
-	logger.Info("处理交易信号",
-		"type", signal.Type,
-		"reason", signal.Reason,
-		"strength", signal.Strength,
-		"current_price", kline.Close.String())
+	logger.Info(fmt.Sprintf("📋 处理交易信号: type=%s, reason=%s, strength=%.1f, price=%s", 
+		signal.Type, signal.Reason, signal.Strength, kline.Close.String()))
 
 	switch signal.Type {
 	case "BUY":
@@ -245,7 +234,7 @@ func (e *TradingEngine) handleBuySignal(ctx context.Context, signal *strategy.Si
 	tradeAmount := availableCash.Mul(e.positionSizePercent)
 
 	if tradeAmount.LessThan(e.minTradeAmount) {
-		logger.Info("交易金额过小，跳过买入", "amount", tradeAmount.String(), "min", e.minTradeAmount.String())
+		logger.Info(fmt.Sprintf("交易金额过小，跳过买入: amount=%s, min=%s", tradeAmount.String(), e.minTradeAmount.String()))
 		return nil
 	}
 
@@ -255,7 +244,7 @@ func (e *TradingEngine) handleBuySignal(ctx context.Context, signal *strategy.Si
 	quantity := tradeAmount.Div(limitPrice)
 
 	// 创建挂单
-	orderID := fmt.Sprintf("buy_%d_%s", time.Now().UnixNano(), e.tradingPair.Base)
+	orderID := generateShortOrderID("buy", e.tradingPair.Base)
 	expireTime := kline.OpenTime.Add(24 * time.Hour) // 24小时过期
 
 	pendingOrder := &PendingOrder{
@@ -270,11 +259,8 @@ func (e *TradingEngine) handleBuySignal(ctx context.Context, signal *strategy.Si
 		OriginSignal: signal.Type,
 	}
 
-	logger.Info("🔵 生成买入限价单",
-		"order_id", orderID,
-		"limit_price", limitPrice.String(),
-		"quantity", quantity.String(),
-		"current_price", kline.Close.String())
+	logger.Info(fmt.Sprintf("🔵 生成买入限价单: id=%s, limit_price=%s, qty=%s, current_price=%s", 
+		orderID, limitPrice.String(), quantity.String(), kline.Close.String()))
 
 	return e.orderManager.PlaceOrder(ctx, pendingOrder)
 }
@@ -292,7 +278,7 @@ func (e *TradingEngine) handleSellSignal(ctx context.Context, signal *strategy.S
 	var sellQuantity decimal.Decimal
 	if signal.Strength <= 0 || signal.Strength > 1 {
 		sellQuantity = portfolio.Position
-		logger.Info("信号强度无效，执行全仓卖出", "strength", signal.Strength)
+		logger.Info(fmt.Sprintf("信号强度无效，执行全仓卖出: strength=%.1f", signal.Strength))
 	} else {
 		sellQuantity = portfolio.Position.Mul(decimal.NewFromFloat(signal.Strength))
 		if sellQuantity.GreaterThan(portfolio.Position) {
@@ -312,13 +298,13 @@ func (e *TradingEngine) handleSellSignal(ctx context.Context, signal *strategy.S
 	pendingOrders := e.orderManager.GetPendingOrders()
 	for _, order := range pendingOrders {
 		if order.Type == PendingOrderTypeSellLimit {
-			logger.Info("取消现有卖出挂单", "id", order.ID)
+			logger.Info(fmt.Sprintf("取消现有卖出挂单: id=%s", order.ID))
 			e.orderManager.CancelOrder(ctx, order.ID)
 		}
 	}
 
 	// 创建新的卖出挂单
-	orderID := fmt.Sprintf("sell_%d_%s", time.Now().UnixNano(), e.tradingPair.Base)
+	orderID := generateShortOrderID("sell", e.tradingPair.Base)
 	expireTime := kline.OpenTime.Add(24 * time.Hour) // 24小时过期
 
 	pendingOrder := &PendingOrder{
@@ -333,11 +319,8 @@ func (e *TradingEngine) handleSellSignal(ctx context.Context, signal *strategy.S
 		OriginSignal: signal.Type,
 	}
 
-	logger.Info("🔴 生成卖出限价单",
-		"order_id", orderID,
-		"limit_price", limitPrice.String(),
-		"quantity", sellQuantity.String(),
-		"current_price", kline.Close.String())
+	logger.Info(fmt.Sprintf("🔴 生成卖出限价单: id=%s, limit_price=%s, qty=%s, current_price=%s", 
+		orderID, limitPrice.String(), sellQuantity.String(), kline.Close.String()))
 
 	return e.orderManager.PlaceOrder(ctx, pendingOrder)
 }
